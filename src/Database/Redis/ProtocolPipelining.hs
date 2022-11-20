@@ -16,7 +16,7 @@
 --
 module Database.Redis.ProtocolPipelining (
   Connection,
-  connect, enableTLS, beginReceiving, disconnect, request, send, recv, flush, fromCtx
+  connect, enableTLS, beginReceiving, disconnect, request, send, recv, flush, fromCtx, Connection(..)
 ) where
 
 import           Prelude

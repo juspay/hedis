@@ -28,6 +28,7 @@ import Control.Concurrent.MVar(MVar, newMVar, readMVar, modifyMVar, modifyMVar_)
 import Control.Monad(zipWithM, when, replicateM)
 import Database.Redis.Cluster.HashSlot(HashSlot, keyToSlot)
 import qualified Database.Redis.ConnectionContext as CC
+import qualified Database.Redis.ProtocolPipelining as PP
 import qualified Data.HashMap.Strict as HM
 import qualified Data.IntMap.Strict as IntMap
 import           Data.Typeable
@@ -100,8 +101,8 @@ instance Exception UnsupportedClusterCommandException
 newtype CrossSlotException = CrossSlotException [[B.ByteString]] deriving (Show, Typeable)
 instance Exception CrossSlotException
 
-connect :: [CMD.CommandInfo] -> MVar ShardMap -> Maybe Int -> IO Connection
-connect commandInfos shardMapVar timeoutOpt = do
+connect :: [CMD.CommandInfo] -> MVar ShardMap -> Maybe Int -> Maybe (PP.Connection -> IO ()) -> IO Connection
+connect commandInfos shardMapVar timeoutOpt sendAuth = do
         shardMap <- readMVar shardMapVar
         stateVar <- newMVar $ Pending []
         pipelineVar <- newMVar $ Pipeline stateVar
@@ -111,9 +112,13 @@ connect commandInfos shardMapVar timeoutOpt = do
     nodeConnections shardMap = HM.fromList <$> mapM connectNode (nub $ nodes shardMap)
     connectNode :: Node -> IO (NodeID, NodeConnection)
     connectNode (Node n _ host port) = do
-        ctx <- CC.connect host (CC.PortNumber $ toEnum port) timeoutOpt
+        conn <- PP.connect host (CC.PortNumber $ toEnum port) timeoutOpt
+        PP.beginReceiving conn
+        case sendAuth of
+            Just runAuth -> runAuth conn
+            Nothing -> return ()
         ref <- IOR.newIORef Nothing
-        return (n, NodeConnection ctx ref n)
+        return (n, NodeConnection (PP.connCtx conn) ref n)
 
 disconnect :: Connection -> IO ()
 disconnect (Connection nodeConnMap _ _ _) = mapM_ disconnectNode (HM.elems nodeConnMap) where
