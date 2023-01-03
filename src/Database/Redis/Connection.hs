@@ -127,7 +127,7 @@ createConnection ConnInfo{..} = do
     return conn'
 
 -- |Send Auth and select database for the given connection of a node
-sendAuthAndSelectDB :: Maybe B.ByteString -> Integer  -> PP.Connection -> IO ()
+sendAuthAndSelectDB :: Maybe B.ByteString -> Integer -> PP.Connection -> IO ()
 sendAuthAndSelectDB connectionAuth connectionDatabase conn =
     runRedisInternal conn $ do
         -- AUTH
@@ -209,10 +209,7 @@ connectCluster bootstrapConnInfo = do
             shardMap <- shardMapFromClusterSlotsResponse slots
             newMVar shardMap
     commandInfos <- runRedisInternal conn command
-    let sendAuth =
-            case connectAuth bootstrapConnInfo of
-                Nothing -> Nothing
-                Just authInfo -> Just $ sendAuthAndSelectDB (Just authInfo) (connectDatabase bootstrapConnInfo)
+    let sendAuth = sendAuthAndSelectDB (connectAuth bootstrapConnInfo) (connectDatabase bootstrapConnInfo)
     case commandInfos of
         Left e -> throwIO $ ClusterConnectError e
         Right infos -> do

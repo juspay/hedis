@@ -101,8 +101,8 @@ instance Exception UnsupportedClusterCommandException
 newtype CrossSlotException = CrossSlotException [[B.ByteString]] deriving (Show, Typeable)
 instance Exception CrossSlotException
 
-connect :: [CMD.CommandInfo] -> MVar ShardMap -> Maybe Int -> Maybe (PP.Connection -> IO ()) -> IO Connection
-connect commandInfos shardMapVar timeoutOpt sendAuth = do
+connect :: [CMD.CommandInfo] -> MVar ShardMap -> Maybe Int -> (PP.Connection -> IO ()) -> IO Connection
+connect commandInfos shardMapVar timeoutOpt sendAuthAndSelect = do
         shardMap <- readMVar shardMapVar
         stateVar <- newMVar $ Pending []
         pipelineVar <- newMVar $ Pipeline stateVar
@@ -114,9 +114,7 @@ connect commandInfos shardMapVar timeoutOpt sendAuth = do
     connectNode (Node n _ host port) = do
         conn <- PP.connect host (CC.PortNumber $ toEnum port) timeoutOpt
         PP.beginReceiving conn
-        case sendAuth of
-            Just runAuth -> runAuth conn
-            Nothing -> return ()
+        sendAuthAndSelect conn
         ref <- IOR.newIORef Nothing
         return (n, NodeConnection (PP.connCtx conn) ref n)
 
