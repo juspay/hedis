@@ -123,27 +123,30 @@ createConnection ConnInfo{..} = do
                Nothing -> return conn
                Just tlsParams -> PP.enableTLS tlsParams conn
     PP.beginReceiving conn'
-    sendAuthAndSelectDB connectAuth connectDatabase conn'
+    runRedisInternal conn' $ do
+        sendAuth connectAuth
+        sendSelectDB connectDatabase
     return conn'
 
--- |Send Auth and select database for the given connection of a node
-sendAuthAndSelectDB :: Maybe B.ByteString -> Integer -> PP.Connection -> IO ()
-sendAuthAndSelectDB connectionAuth connectionDatabase conn =
-    runRedisInternal conn $ do
-        -- AUTH
-        case connectionAuth of
-            Nothing   -> return ()
-            Just pass -> do
-              resp <- auth pass
-              case resp of
-                Left r -> liftIO $ throwIO $ ConnectAuthError r
-                _      -> return ()
-        -- SELECT
-        when (connectionDatabase /= 0) $ do
-          resp <- select connectionDatabase
-          case resp of
-              Left r -> liftIO $ throwIO $ ConnectSelectError r
-              _      -> return ()
+-- | Send Auth on a node
+sendAuth :: Maybe B.ByteString -> Redis ()
+sendAuth connectionAuth =
+  case connectionAuth of
+    Nothing -> return ()
+    Just pass -> do
+      resp <- auth pass
+      case resp of
+        Left r -> liftIO $ throwIO $ ConnectAuthError r
+        _ -> return ()
+
+-- | Send select database on a node
+sendSelectDB :: Integer -> Redis ()
+sendSelectDB connectionDatabase =
+  when (connectionDatabase /= 0) $ do
+    resp <- select connectionDatabase
+    case resp of
+      Left r -> liftIO $ throwIO $ ConnectSelectError r
+      _ -> return ()
 
 -- |Constructs a 'Connection' pool to a Redis server designated by the
 --  given 'ConnectInfo'. The first connection is not actually established
@@ -209,11 +212,11 @@ connectCluster bootstrapConnInfo = do
             shardMap <- shardMapFromClusterSlotsResponse slots
             newMVar shardMap
     commandInfos <- runRedisInternal conn command
-    let sendAuth = sendAuthAndSelectDB (connectAuth bootstrapConnInfo) (connectDatabase bootstrapConnInfo)
+    let sendRedisAuth = flip runRedisInternal (sendAuth $ connectAuth bootstrapConnInfo)
     case commandInfos of
         Left e -> throwIO $ ClusterConnectError e
         Right infos -> do
-            pool <- createPool (Cluster.connect infos shardMapVar Nothing sendAuth) Cluster.disconnect 1 (connectMaxIdleTime bootstrapConnInfo) (connectMaxConnections bootstrapConnInfo)
+            pool <- createPool (Cluster.connect infos shardMapVar Nothing sendRedisAuth) Cluster.disconnect 1 (connectMaxIdleTime bootstrapConnInfo) (connectMaxConnections bootstrapConnInfo)
             return $ ClusteredConnection shardMapVar pool
 
 shardMapFromClusterSlotsResponse :: ClusterSlotsResponse -> IO ShardMap

@@ -45,6 +45,10 @@ redis >>=? expected = do
 assert :: Bool -> Redis ()
 assert = liftIO . HUnit.assert
 
+whenJust :: Maybe a -> (a -> IO ()) -> IO ()
+whenJust (Just a) f = f a
+whenJust Nothing _ = return ()
+
 ------------------------------------------------------------------------------
 -- Miscellaneous
 --
@@ -748,28 +752,39 @@ testXInfo = testCase "xinfo" $ do
             xinfoConsumerName HUnit.@=? "consumer1"
             xinfoConsumerNumPendingMessages HUnit.@=? 2
         Right bad -> HUnit.assertFailure $ "Unexpectedly got " ++ show bad
-    xinfoGroups "somestream" >>=? [
-        XInfoGroupsResponse{
-            xinfoGroupsGroupName = "somegroup",
-            xinfoGroupsNumConsumers = 1,
-            xinfoGroupsNumPendingMessages = 2,
-            xinfoGroupsLastDeliveredMessageId = "122-0"
-        }]
-    xinfoStream "somestream" >>=? XInfoStreamResponse
-        { xinfoStreamLength = 2
-        , xinfoStreamRadixTreeKeys = 1
-        , xinfoStreamRadixTreeNodes = 2
-        , xinfoStreamNumGroups = 1
-        , xinfoStreamLastEntryId = "122-0"
-        , xinfoStreamFirstEntry = StreamsRecord
-            { recordId = "121-0"
-            , keyValues = [("key1", "value1")]
-            }
-        , xinfoStreamLastEntry = StreamsRecord
-            { recordId = "122-0"
-            , keyValues = [("key2", "value2")]
-            }
-        }
+
+    groupInfos <- xinfoGroups "somestream"
+    liftIO $ case groupInfos of
+        Left reply -> HUnit.assertFailure $ "Redis error: " ++ show reply
+        Right [XInfoGroupsResponse{..}] -> do
+            xinfoGroupsGroupName HUnit.@=? "somegroup"
+            xinfoGroupsNumConsumers HUnit.@=? 1
+            xinfoGroupsNumPendingMessages HUnit.@=? 2
+            xinfoGroupsLastDeliveredMessageId HUnit.@=? "122-0"
+            whenJust xinfoGroupsEntriesRead (HUnit.@=? 2)
+            whenJust xinfoGroupsLag (HUnit.@=? 0)
+        Right bad -> HUnit.assertFailure $ "Unexpectedly got " ++ show bad
+
+    streamInfos <- xinfoStream "somestream"
+    liftIO $ case streamInfos of
+        Left reply -> HUnit.assertFailure $ "Redis error: " ++ show reply
+        Right XInfoStreamResponse{..} -> do
+            xinfoStreamLength HUnit.@=? 2
+            xinfoStreamRadixTreeKeys HUnit.@=? 1
+            xinfoStreamRadixTreeNodes HUnit.@=? 2
+            xinfoStreamNumGroups HUnit.@=? 1
+            xinfoStreamLastEntryId HUnit.@=? "122-0"
+            xinfoStreamFirstEntry HUnit.@=? StreamsRecord
+                { recordId = "121-0"
+                , keyValues = [("key1", "value1")]
+                }
+            xinfoStreamLastEntry HUnit.@=? StreamsRecord
+                { recordId = "122-0"
+                , keyValues = [("key2", "value2")]
+                }
+            whenJust xinfoStreamMaxDeletedEntryId (HUnit.@=? "0-0")
+            whenJust xinfoStreamEntriesAdded (HUnit.@=? 2)
+            whenJust xinfoStreamRecordedFirstEntryId (HUnit.@=? "121-0")
 
 testXDel ::Test
 testXDel = testCase "xdel" $ do
