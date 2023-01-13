@@ -1,5 +1,6 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE TypeApplications #-}
 
 module Main (main) where
 
@@ -14,7 +15,8 @@ main = do
     -- spin up a cluster on this port using docker you can run:
     --
     --     docker run -e "IP=0.0.0.0" -p 7000-7010:7000-7010 grokzen/redis-cluster:5.0.6
-    conn <- connectCluster defaultConnectInfo { connectPort = PortNumber 7000 }
+    print @String "Connecting to cluster"
+    conn <- connectCluster defaultConnectInfo { connectPort = PortNumber 30001, connectTimeout = Just 50, connectReadOnly = True }
     Test.defaultMain (tests conn)
 
 tests :: Connection -> [Test.Test]

@@ -3,6 +3,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE ViewPatterns #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 module Database.Redis.Cluster
   ( Connection(..)
   , NodeRole(..)
@@ -18,12 +19,13 @@ module Database.Redis.Cluster
 ) where
 
 import qualified Data.ByteString as B
+import Data.Char(toLower)
 import qualified Data.ByteString.Char8 as Char8
 import qualified Data.IORef as IOR
 import Data.List(nub, sortBy, find)
 import Data.Map(fromListWith, assocs)
 import Data.Function(on)
-import Control.Exception(Exception, throwIO, BlockedIndefinitelyOnMVar(..), catches, Handler(..))
+import Control.Exception(Exception, SomeException, throwIO, BlockedIndefinitelyOnMVar(..), catches, Handler(..), try)
 import Control.Concurrent.MVar(MVar, newMVar, readMVar, modifyMVar, modifyMVar_)
 import Control.Monad(zipWithM, when, replicateM)
 import Database.Redis.Cluster.HashSlot(HashSlot, keyToSlot)
@@ -31,7 +33,8 @@ import qualified Database.Redis.ConnectionContext as CC
 import qualified Database.Redis.ProtocolPipelining as PP
 import qualified Data.HashMap.Strict as HM
 import qualified Data.IntMap.Strict as IntMap
-import           Data.Typeable
+import Data.Typeable ( Typeable )
+import Say(sayString)
 import qualified Scanner
 import System.IO.Unsafe(unsafeInterleaveIO)
 
@@ -49,7 +52,9 @@ import qualified Database.Redis.Cluster.Command as CMD
 
 -- | A connection to a redis cluster, it is compoesed of a map from Node IDs to
 -- | 'NodeConnection's, a 'Pipeline', and a 'ShardMap'
-data Connection = Connection (HM.HashMap NodeID NodeConnection) (MVar Pipeline) (MVar ShardMap) CMD.InfoMap
+type IsReadOnly = Bool
+
+data Connection = Connection (HM.HashMap NodeID NodeConnection) (MVar Pipeline) (MVar ShardMap) CMD.InfoMap IsReadOnly
 
 -- | A connection to a single node in the cluster, similar to 'ProtocolPipelining.Connection'
 data NodeConnection = NodeConnection CC.ConnectionContext (IOR.IORef (Maybe B.ByteString)) NodeID
@@ -101,33 +106,45 @@ instance Exception UnsupportedClusterCommandException
 newtype CrossSlotException = CrossSlotException [[B.ByteString]] deriving (Show, Typeable)
 instance Exception CrossSlotException
 
-connect :: [CMD.CommandInfo] -> MVar ShardMap -> Maybe Int -> (PP.Connection -> IO ()) -> IO Connection
-connect commandInfos shardMapVar timeoutOpt sendAuthAndSelect = do
+connect :: [CMD.CommandInfo] -> MVar ShardMap -> Maybe Int -> Bool -> (Bool -> IO ShardMap) -> (PP.Connection -> IO ()) -> IO Connection
+connect commandInfos shardMapVar timeoutOpt isReadOnly refreshShardMap sendAuth = do
         shardMap <- readMVar shardMapVar
         stateVar <- newMVar $ Pending []
         pipelineVar <- newMVar $ Pipeline stateVar
-        nodeConns <- nodeConnections shardMap
-        return $ Connection nodeConns pipelineVar shardMapVar (CMD.newInfoMap commandInfos) where
+        eNodeConns <- try $ nodeConnections shardMap
+        -- whenever one of the node connection is not established,
+        -- will refresh the slots and retry node connections.
+        -- This would handle fail over, IP change use cases.
+        nodeConns <-
+          case eNodeConns of
+            Right nodeConns -> return nodeConns
+            Left (_ :: SomeException) -> do
+              newShardMap <- refreshShardMap True
+              refreshShardMapVar "locked refreshing due to connection issues" newShardMap
+              nodeConnections newShardMap
+        return $ Connection nodeConns pipelineVar shardMapVar (CMD.newInfoMap commandInfos) isReadOnly where
     nodeConnections :: ShardMap -> IO (HM.HashMap NodeID NodeConnection)
     nodeConnections shardMap = HM.fromList <$> mapM connectNode (nub $ nodes shardMap)
     connectNode :: Node -> IO (NodeID, NodeConnection)
     connectNode (Node n _ host port) = do
         conn <- PP.connect host (CC.PortNumber $ toEnum port) timeoutOpt
         PP.beginReceiving conn
-        sendAuthAndSelect conn
+        sendAuth conn
         ref <- IOR.newIORef Nothing
         return (n, NodeConnection (PP.connCtx conn) ref n)
+    refreshShardMapVar :: String -> ShardMap -> IO ()
+    refreshShardMapVar msg shardMap = hasLocked msg $ modifyMVar_ shardMapVar (const (pure shardMap))
 
 disconnect :: Connection -> IO ()
-disconnect (Connection nodeConnMap _ _ _) = mapM_ disconnectNode (HM.elems nodeConnMap) where
+disconnect (Connection nodeConnMap _ _ _ _ ) = mapM_ disconnectNode (HM.elems nodeConnMap) where
     disconnectNode (NodeConnection nodeCtx _ _) = CC.disconnect nodeCtx
 
 -- Add a request to the current pipeline for this connection. The pipeline will
 -- be executed implicitly as soon as any result returned from this function is
 -- evaluated.
 requestPipelined :: IO ShardMap -> Connection -> [B.ByteString] -> IO Reply
-requestPipelined refreshAction conn@(Connection _ pipelineVar shardMapVar _) nextRequest = modifyMVar pipelineVar $ \(Pipeline stateVar) -> do
-    (newStateVar, repliesIndex) <- hasLocked $ modifyMVar stateVar $ \case
+requestPipelined refreshAction conn@(Connection _ pipelineVar shardMapVar _ _) nextRequest = modifyMVar pipelineVar $ \(Pipeline stateVar) -> do
+    (newStateVar, repliesIndex) <- hasLocked "locked adding to pipeline" $ modifyMVar stateVar $ \case
         Pending requests | isMulti nextRequest -> do
             replies <- evaluatePipeline shardMapVar refreshAction conn requests
             s' <- newMVar $ TransactionPending [nextRequest]
@@ -151,7 +168,7 @@ requestPipelined refreshAction conn@(Connection _ pipelineVar shardMapVar _) nex
                         Pending [nextRequest]
             return (e, (s', 0))
     evaluateAction <- unsafeInterleaveIO $ do
-        replies <- hasLocked $ modifyMVar newStateVar $ \case
+        replies <- hasLocked "locked evaluating replies" $ modifyMVar newStateVar $ \case
             Executed replies ->
                 return (Executed replies, replies)
             Pending requests-> do
@@ -196,10 +213,10 @@ rawResponse (CompletedRequest _ _ r) = r
 -- cluster reconfiguration events, which should be rare.
 evaluatePipeline :: MVar ShardMap -> IO ShardMap -> Connection -> [[B.ByteString]] -> IO [Reply]
 evaluatePipeline shardMapVar refreshShardmapAction conn requests = do
-        shardMap <- hasLocked $ readMVar shardMapVar
+        shardMap <- hasLocked "reading shardmap in evaluatePipeline" $ readMVar shardMapVar
         requestsByNode <- getRequestsByNode shardMap
         resps <- concat <$> mapM (uncurry executeRequests) requestsByNode
-        when (any (moved . rawResponse) resps) refreshShardMapVar
+        when (any (moved . rawResponse) resps) (refreshShardMapVar "locked refreshing due to moved responses")
         retriedResps <- mapM (retry 0) resps
         return $ map rawResponse $ sortBy (on compare responseIndex) retriedResps
   where
@@ -219,8 +236,8 @@ evaluatePipeline shardMapVar refreshShardmapAction conn requests = do
     retry retryCount (CompletedRequest index request thisReply) = do
         retryReply <- head <$> retryBatch shardMapVar refreshShardmapAction conn retryCount [request] [thisReply]
         return (CompletedRequest index request retryReply)
-    refreshShardMapVar :: IO ()
-    refreshShardMapVar = hasLocked $ modifyMVar_ shardMapVar (const refreshShardmapAction)
+    refreshShardMapVar :: String -> IO ()
+    refreshShardMapVar msg = hasLocked msg $ modifyMVar_ shardMapVar (const refreshShardmapAction)
 
 -- Retry a batch of requests if any of the responses is a redirect instruction.
 -- If multiple requests are passed in they're assumed to be a MULTI..EXEC
@@ -231,19 +248,19 @@ retryBatch shardMapVar refreshShardmapAction conn retryCount requests replies =
     -- there is one.
     case last replies of
         (Error errString) | B.isPrefixOf "MOVED" errString -> do
-            let (Connection _ _ _ infoMap) = conn
+            let (Connection _ _ _ infoMap _) = conn
             keys <- mconcat <$> mapM (requestKeys infoMap) requests
             hashSlot <- hashSlotForKeys (CrossSlotException requests) keys
             nodeConn <- nodeConnForHashSlot shardMapVar conn (MissingNodeException (head requests)) hashSlot
             requestNode nodeConn requests
         (askingRedirection -> Just (host, port)) -> do
-            shardMap <- hasLocked $ readMVar shardMapVar
+            shardMap <- hasLocked "locked for reading shardmap in retryBatch" $ readMVar shardMapVar
             let maybeAskNode = nodeConnWithHostAndPort shardMap conn host port
             case maybeAskNode of
                 Just askNode -> tail <$> requestNode askNode (["ASKING"] : requests)
                 Nothing -> case retryCount of
                     0 -> do
-                        _ <- hasLocked $ modifyMVar_ shardMapVar (const refreshShardmapAction)
+                        _ <- hasLocked "locked to refresh shardmap in retryBatch" $ modifyMVar_ shardMapVar (const refreshShardmapAction)
                         retryBatch shardMapVar refreshShardmapAction conn (retryCount + 1) requests replies
                     _ -> throwIO $ MissingNodeException (head requests)
         _ -> return replies
@@ -253,7 +270,7 @@ retryBatch shardMapVar refreshShardmapAction conn retryCount requests replies =
 evaluateTransactionPipeline :: MVar ShardMap -> IO ShardMap -> Connection -> [[B.ByteString]] -> IO [Reply]
 evaluateTransactionPipeline shardMapVar refreshShardmapAction conn requests' = do
     let requests = reverse requests'
-    let (Connection _ _ _ infoMap) = conn
+    let (Connection _ _ _ infoMap _) = conn
     keys <- mconcat <$> mapM (requestKeys infoMap) requests
     -- In cluster mode Redis expects commands in transactions to all work on the
     -- same hashslot. We find that hashslot here.
@@ -293,14 +310,13 @@ evaluateTransactionPipeline shardMapVar refreshShardmapAction conn requests' = d
     -- often to retry, so instead we'll propagate the error to the library user
     -- and let them decide how they would like to handle the error.
     when (any moved resps)
-      (hasLocked $ modifyMVar_ shardMapVar (const refreshShardmapAction))
-    retriedResps <- retryBatch shardMapVar refreshShardmapAction conn 0 requests resps
-    return retriedResps
+      (hasLocked "locked to refresh shardmap in evaluateTransactionPipeline" $ modifyMVar_ shardMapVar (const refreshShardmapAction))
+    retryBatch shardMapVar refreshShardmapAction conn 0 requests resps
 
 nodeConnForHashSlot :: Exception e => MVar ShardMap -> Connection -> e -> HashSlot -> IO NodeConnection
 nodeConnForHashSlot shardMapVar conn exception hashSlot = do
-    let (Connection nodeConns _ _ _) = conn
-    (ShardMap shardMap) <- hasLocked $ readMVar shardMapVar
+    let (Connection nodeConns _ _ _ _) = conn
+    (ShardMap shardMap) <- hasLocked "locked for reading shardmap in nodeConnForHashSlot" $ readMVar shardMapVar
     node <-
         case IntMap.lookup (fromEnum hashSlot) shardMap of
             Nothing -> throwIO exception
@@ -342,39 +358,60 @@ moved _ = False
 
 
 nodeConnWithHostAndPort :: ShardMap -> Connection -> Host -> Port -> Maybe NodeConnection
-nodeConnWithHostAndPort shardMap (Connection nodeConns _ _ _) host port = do
+nodeConnWithHostAndPort shardMap (Connection nodeConns _ _ _ _) host port = do
     node <- nodeWithHostAndPort shardMap host port
     HM.lookup (nodeId node) nodeConns
 
 nodeConnectionForCommand :: Connection -> ShardMap -> [B.ByteString] -> IO [NodeConnection]
-nodeConnectionForCommand conn@(Connection nodeConns _ _ infoMap) (ShardMap shardMap) request =
+nodeConnectionForCommand conn@(Connection nodeConns _ _ infoMap connReadOnly) (ShardMap shardMap) request = do
     case request of
-        ("FLUSHALL" : _) -> allNodes
-        ("FLUSHDB" : _) -> allNodes
-        ("QUIT" : _) -> allNodes
-        ("UNWATCH" : _) -> allNodes
+        ("FLUSHALL" : _) -> allMasterNodes'
+        ("FLUSHDB" : _) -> allMasterNodes'
+        ("QUIT" : _) -> allMasterNodes'
+        ("UNWATCH" : _) -> allMasterNodes'
         _ -> do
+            let isCmdReadOnly = isCommandReadonly infoMap request
             keys <- requestKeys infoMap request
             hashSlot <- hashSlotForKeys (CrossSlotException [request]) keys
-            node <- case IntMap.lookup (fromEnum hashSlot) shardMap of
-                Nothing -> throwIO $ MissingNodeException request
-                Just (Shard master _) -> return master
+            node <- case (IntMap.lookup (fromEnum hashSlot) shardMap, connReadOnly) of
+                (Just (Shard master _), False) -> return master
+                (Just (Shard master []), True) ->
+                    return master
+                (Just (Shard master (slave: _)), True) ->
+                    if isCmdReadOnly
+                        then return slave
+                        else return master
+                _ -> throwIO $ MissingNodeException request
             maybe (throwIO $ MissingNodeException request) (return . return) (HM.lookup (nodeId node) nodeConns)
     where
-        allNodes =
+        isCommandReadonly :: CMD.InfoMap -> [B.ByteString] -> Bool
+        isCommandReadonly (CMD.InfoMap iMap) (command: _) =
+            let
+                info = HM.lookup (map toLower $ Char8.unpack command) iMap
+            in maybe False (CMD.ReadOnly `elem`) (CMD.flags <$> info)
+        isCommandReadonly _ _ = False
+
+        allMasterNodes' :: IO [NodeConnection]
+        allMasterNodes' =
             case allMasterNodes conn (ShardMap shardMap) of
                 Nothing -> throwIO $ MissingNodeException request
                 Just allNodes' -> return allNodes'
 
+cleanRequest :: [B.ByteString] -> [B.ByteString]
+cleanRequest ("MULTI" : _) = ["MULTI"]
+cleanRequest ("EXEC" : _) = ["EXEC"]
+cleanRequest req = req
+
 allMasterNodes :: Connection -> ShardMap -> Maybe [NodeConnection]
-allMasterNodes (Connection nodeConns _ _ _) (ShardMap shardMap) =
+allMasterNodes (Connection nodeConns _ _ _ _) (ShardMap shardMap) =
     mapM (flip HM.lookup nodeConns . nodeId) masterNodes
   where
     masterNodes = (\(Shard master _) -> master) <$> nub (IntMap.elems shardMap)
 
 requestNode :: NodeConnection -> [[B.ByteString]] -> IO [Reply]
 requestNode (NodeConnection ctx lastRecvRef _) requests = do
-    mapM_ (sendNode . renderRequest) requests
+    let reqs = map cleanRequest requests
+    mapM_ (sendNode . renderRequest) reqs
     _ <- CC.flush ctx
     replicateM (length requests) recvNode
 
@@ -396,6 +433,7 @@ requestNode (NodeConnection ctx lastRecvRef _) requests = do
             IOR.writeIORef lastRecvRef (Just rest')
             return r
 
+{-# INLINE nodes #-}
 nodes :: ShardMap -> [Node]
 nodes (ShardMap shardMap) = concatMap snd $ IntMap.toList $ fmap shardNodes shardMap where
     shardNodes :: Shard -> [Node]
@@ -408,8 +446,8 @@ nodeWithHostAndPort shardMap host port = find (\(Node _ _ nodeHost nodePort) -> 
 nodeId :: Node -> NodeID
 nodeId (Node theId _ _ _) = theId
 
-hasLocked :: IO a -> IO a
-hasLocked action =
+hasLocked :: String -> IO a -> IO a
+hasLocked msg action =
   action `catches`
-  [ Handler $ \exc@BlockedIndefinitelyOnMVar -> throwIO exc
+  [ Handler $ \exc@BlockedIndefinitelyOnMVar -> sayString ("[MVar]: " ++ msg) >> throwIO exc
   ]
