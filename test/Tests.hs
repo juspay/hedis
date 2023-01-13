@@ -640,8 +640,8 @@ testZrangelex = testCase "zrangebylex" $ do
 
 testXAddRead ::Test
 testXAddRead = testCase "xadd/xread" $ do
-    xadd "{same}somestream" "123" [("key", "value"), ("key2", "value2")]
-    xadd "{same}otherstream" "456" [("key1", "value1")]
+    xadd "{same}somestream" "123" [("key", "value"), ("key2", "value2")] >>=? "123-0"
+    xadd "{same}otherstream" "456" [("key1", "value1")] >>=? "456-0"
     xaddOpts "{same}thirdstream" "*" [("k", "v")] (Maxlen 1)
     xaddOpts "{same}thirdstream" "*" [("k", "v")] (ApproxMaxlen 1)
     xread [("{same}somestream", "0"), ("{same}otherstream", "0")] >>=? Just [
