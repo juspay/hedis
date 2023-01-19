@@ -267,6 +267,7 @@ evaluatePipeline shardMapVar refreshShardmapAction conn requests = do
         return $ zipWith (curry (\(PendingRequest i r, rep) -> CompletedRequest i r rep)) nodeRequests replies
     retry :: Int -> CompletedRequest -> IO CompletedRequest
     retry retryCount (CompletedRequest index request thisReply) = do
+        print $ "inside retried: " <> show request <> " with respo: " <> show thisReply
         retryReply <- head <$> retryBatch shardMapVar refreshShardmapAction conn retryCount [request] [thisReply]
         return (CompletedRequest index request retryReply)
     refreshShardMapVar :: IO ()
@@ -411,6 +412,7 @@ nodeConnectionForCommand conn@(Connection nodeConns _ _ infoMap _) (ShardMap sha
         ("UNWATCH" : _) -> allNodes
         _ -> do
             keys <- requestKeys infoMap request
+            print $ "keys computed: " <> show keys <> " for request: " <> show request
             hashSlot <- hashSlotForKeys (CrossSlotException [request]) keys
             node <- case IntMap.lookup (fromEnum hashSlot) shardMap of
                 Nothing -> throwIO $ MissingNodeException request
