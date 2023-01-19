@@ -250,9 +250,9 @@ connectCluster bootstrapConnInfo = do
 
 shardMapFromClusterSlotsResponse :: ClusterSlotsResponse -> IO ShardMap
 shardMapFromClusterSlotsResponse a@ClusterSlotsResponse{..} = do
-    print $ "Cluster Slot Resoponse: " <> show a 
+    print $ "hedis:shardMapFromClusterSlotsResponse Cluster Slot Resoponse: " <> show a 
     v <- ShardMap <$> foldr mkShardMap (pure IntMap.empty)  clusterSlotsResponseEntries
-    print $ "shard map computed: " <> show v
+    print $ "hedis:shardMapFromClusterSlotsResponse shard map computed: " <> show v
     return v 
     where
     mkShardMap :: ClusterSlotsResponseEntry -> IO (IntMap.IntMap Shard) -> IO (IntMap.IntMap Shard)

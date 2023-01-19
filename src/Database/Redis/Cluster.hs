@@ -266,13 +266,13 @@ evaluatePipeline shardMapVar refreshShardmapAction conn requests = do
     executeRequests nodeConn@(NodeConnection _ _ nodeId') nodeRequests = do
         print $ "hedis:executeRequests sending the request: " <> show nodeRequests <> " to nodeId: " <> show nodeId'
         replies <- requestNode nodeConn $ map rawRequest nodeRequests
-        print $ "hedis:executeRequests replies: " <> show nodeRequests <> " to nodeId: " <> show nodeId'
+        print $ "hedis:executeRequests replies: " <> show replies
         return $ zipWith (curry (\(PendingRequest i r, rep) -> CompletedRequest i r rep)) nodeRequests replies
     retry :: Int -> CompletedRequest -> IO CompletedRequest
     retry retryCount (CompletedRequest index request thisReply) = do
         print $ "hedis:retry thisReply: " <> show request <> " with respo: " <> show thisReply
         retryReply <- head <$> retryBatch shardMapVar refreshShardmapAction conn retryCount [request] [thisReply]
-        print $ "hedis:retry retryReply: " <> show request <> " with respo: " <> show thisReply
+        print $ "hedis:retry retryReply: " <> show request <> " with respo: " <> show retryReply
         return (CompletedRequest index request retryReply)
     refreshShardMapVar :: IO ()
     refreshShardMapVar = hasLocked $ modifyMVar_ shardMapVar (const refreshShardmapAction)
