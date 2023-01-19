@@ -210,7 +210,8 @@ isExec :: [B.ByteString] -> Bool
 isExec ("EXEC" : _) = True
 isExec _ = False
 
-data PendingRequest = PendingRequest Int [B.ByteString]
+data PendingRequest = PendingRequest Int [B.ByteString] deriving (Show)
+
 data CompletedRequest = CompletedRequest Int [B.ByteString] Reply
 
 rawRequest :: PendingRequest -> [B.ByteString]
@@ -262,13 +263,16 @@ evaluatePipeline shardMapVar refreshShardmapAction conn requests = do
         nodeConns <- nodeConnectionForCommand conn shardMap request
         return $ (, [PendingRequest index request]) <$> nodeConns
     executeRequests :: NodeConnection -> [PendingRequest] -> IO [CompletedRequest]
-    executeRequests nodeConn nodeRequests = do
+    executeRequests nodeConn@(NodeConnection _ _ nodeId') nodeRequests = do
+        print $ "hedis:executeRequests sending the request: " <> show nodeRequests <> " to nodeId: " <> show nodeId'
         replies <- requestNode nodeConn $ map rawRequest nodeRequests
+        print $ "hedis:executeRequests replies: " <> show nodeRequests <> " to nodeId: " <> show nodeId'
         return $ zipWith (curry (\(PendingRequest i r, rep) -> CompletedRequest i r rep)) nodeRequests replies
     retry :: Int -> CompletedRequest -> IO CompletedRequest
     retry retryCount (CompletedRequest index request thisReply) = do
-        print $ "inside retried: " <> show request <> " with respo: " <> show thisReply
+        print $ "hedis:retry thisReply: " <> show request <> " with respo: " <> show thisReply
         retryReply <- head <$> retryBatch shardMapVar refreshShardmapAction conn retryCount [request] [thisReply]
+        print $ "hedis:retry retryReply: " <> show request <> " with respo: " <> show thisReply
         return (CompletedRequest index request retryReply)
     refreshShardMapVar :: IO ()
     refreshShardMapVar = hasLocked $ modifyMVar_ shardMapVar (const refreshShardmapAction)
@@ -412,8 +416,10 @@ nodeConnectionForCommand conn@(Connection nodeConns _ _ infoMap _) (ShardMap sha
         ("UNWATCH" : _) -> allNodes
         _ -> do
             keys <- requestKeys infoMap request
-            print $ "keys computed: " <> show keys <> " for request: " <> show request
+            print $ "hedis:nodeConnectionForCommand keys computed: " <> show keys <> " for request: " <> show request <> " with keyslots for each: " <> show (keyToSlot <$> keys)
+            print $ "hedis:nodeConnectionForCommand shardMap " <> show shardMap
             hashSlot <- hashSlotForKeys (CrossSlotException [request]) keys
+            print $ "hedis:nodeConnectionForCommand hashSlot " <> show hashSlot
             node <- case IntMap.lookup (fromEnum hashSlot) shardMap of
                 Nothing -> throwIO $ MissingNodeException request
                 Just (Shard master _) -> return master
