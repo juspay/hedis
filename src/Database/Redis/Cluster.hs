@@ -41,7 +41,9 @@ import System.IO.Unsafe(unsafeInterleaveIO)
 
 import Database.Redis.Protocol(Reply(Error), renderRequest, reply)
 import qualified Database.Redis.Cluster.Command as CMD
-
+import Text.Read (readMaybe)
+import System.Environment (lookupEnv)
+import qualified Data.Time as Time
 -- This module implements a clustered connection whilst maintaining
 -- compatibility with the original Hedis codebase. In particular it still
 -- performs implicit pipelining using `unsafeInterleaveIO` as the single node
@@ -250,7 +252,10 @@ evaluatePipeline shardMapVar refreshShardmapAction conn requests = do
                                         Left (_ :: SomeException) ->  executeRequests (getRandomConnection cc conn) r
                       ) (zip eresps requestsByNode)
         -- check for any moved in both responses and continue the flow.
-        when (any (moved . rawResponse) resps) refreshShardMapVar
+        when (any (moved . rawResponse) resps)  $ do
+            refreshShardMapVar
+            updatedShardMap <- hasLocked $ readMVar shardMapVar
+            print $ "hedis:evaluatePipeline updatedShardMap: " <> show updatedShardMap
         retriedResps <- mapM (retry 0) resps
         return $ map rawResponse $ sortBy (on compare responseIndex) retriedResps
   where
@@ -287,8 +292,11 @@ retryBatch shardMapVar refreshShardmapAction conn retryCount requests replies =
     case last replies of
         (Error errString) | B.isPrefixOf "MOVED" errString -> do
             let (Connection _ _ _ infoMap _) = conn
+            print $ "hedis:retryBatch requests " <> (show requests)
             keys <- mconcat <$> mapM (requestKeys infoMap) requests
+            print $ "hedis:retryBatch keys " <> (show keys)
             hashSlot <- hashSlotForKeys (CrossSlotException requests) keys
+            print $ "hedis:retryBatch hashSlot " <> (show hashSlot)
             nodeConn <- nodeConnForHashSlot shardMapVar conn (MissingNodeException (head requests)) hashSlot
             requestNode nodeConn requests
         (askingRedirection -> Just (host, port)) -> do
@@ -318,11 +326,17 @@ evaluateTransactionPipeline shardMapVar refreshShardmapAction conn requests' = d
     -- moved to a different node we could end up in a situation where some of
     -- the commands in a transaction are applied and some are not. Better to
     -- fail early.
+    shardMap <- hasLocked $ readMVar shardMapVar
+    print $ "hedis:evaluateTransactionPipeline shardMap " <> (show shardMap)
+    print $ "hedis:evaluateTransactionPipeline requests " <> (show requests)
+    print $ "hedis:evaluateTransactionPipeline keys " <>  (show keys)
     hashSlot <- hashSlotForKeys (CrossSlotException requests) keys
+    print $ "hedis:evaluateTransactionPipeline hashSlot " <> (show hashSlot)
     nodeConn <- nodeConnForHashSlot shardMapVar conn (MissingNodeException (head requests)) hashSlot
     -- catch the exception thrown, send the command to random node.
     -- This change is required to handle the cluster topology change.
     eresps <- try $ requestNode nodeConn requests
+    print $ "hedis:evaluateTransactionPipeline eresp" <> (show eresps) 
     resps <-
       case eresps of
         Right v -> return v
@@ -353,9 +367,12 @@ evaluateTransactionPipeline shardMapVar refreshShardmapAction conn requests' = d
     -- make arbitrary decisions about how long to paus before the retry and how
     -- often to retry, so instead we'll propagate the error to the library user
     -- and let them decide how they would like to handle the error.
-    when (any moved resps)
-      (hasLocked $ modifyMVar_ shardMapVar (const refreshShardmapAction))
+    when (any moved resps) $ do
+        hasLocked $ modifyMVar_ shardMapVar (const refreshShardmapAction)
+        updatedShardMap <- hasLocked $ readMVar shardMapVar
+        print $ "hedis:evaluateTransactionPipeline updatedShardMap " <> (show updatedShardMap)
     retriedResps <- retryBatch shardMapVar refreshShardmapAction conn 0 requests resps
+    print $ "hedis:evaluateTransactionPipeline retriedResps " <> (show retriedResps)
     return retriedResps
 
 nodeConnForHashSlot :: Exception e => MVar ShardMap -> Connection -> e -> HashSlot -> IO NodeConnection
@@ -438,7 +455,10 @@ allMasterNodes (Connection nodeConns _ _ _ _) (ShardMap shardMap) =
 
 requestNode :: NodeConnection -> [[B.ByteString]] -> IO [Reply]
 requestNode (NodeConnection ctx lastRecvRef _) requests = do
-    eresp <- race requestNodeImpl (threadDelay 1000000) -- 100 ms
+    envTimeout <- round . (\x -> (x :: Time.NominalDiffTime) * 100000) . realToFrac . fromMaybe (0.5 :: Double) . (>>= readMaybe) <$> lookupEnv "REDIS_NODE_TIMEOUT"
+    print $ "hedis:requestNode envTimeout " <> (show envTimeout)
+    eresp <- race requestNodeImpl (threadDelay envTimeout)
+    print $ "hedis:requestNode eresp " <> (show eresp)
     case eresp of
       Left e -> return e
       Right _ -> putStrLn "timeout happened" *> throwIO NoNodeException
