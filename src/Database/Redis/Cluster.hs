@@ -433,7 +433,7 @@ allMasterNodes (Connection nodeConns _ _ _ _) (ShardMap shardMap) =
 
 requestNode :: NodeConnection -> [[B.ByteString]] -> IO [Reply]
 requestNode (NodeConnection ctx lastRecvRef _) requests = do
-    envTimeout <- round . (\x -> (x :: Time.NominalDiffTime) * 100000) . realToFrac . fromMaybe (0.5 :: Double) . (>>= readMaybe) <$> lookupEnv "REDIS_REQUEST_NODE_TIMEOUT"
+    envTimeout <- round . (\x -> (x :: Time.NominalDiffTime) * 1000000) . realToFrac . fromMaybe (0.05 :: Double) . (>>= readMaybe) <$> lookupEnv "REDIS_REQUEST_NODE_TIMEOUT"
     eresp <- race requestNodeImpl (threadDelay envTimeout)
     case eresp of
       Left e -> return e
