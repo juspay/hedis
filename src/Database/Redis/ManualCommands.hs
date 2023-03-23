@@ -147,7 +147,7 @@ zrangebyscore
     -> Double -- ^ max
     -> m (f [ByteString])
 zrangebyscore key min max =
-    sendRequest ["ZRANGEBYSCORE", encode key, encode min, encode max]
+    sendRequest ["ZRANGE", encode key, encode min, encode max, "BYSCORE"]
 
 zrangebyscoreWithscores
     :: (RedisCtx m f)
