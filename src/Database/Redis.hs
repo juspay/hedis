@@ -162,7 +162,7 @@ module Database.Redis (
     RedisCtx(..), MonadRedis(..),
 
     -- * Connection
-    Connection, ConnectError(..), connect, checkedConnect, disconnect,
+    Connection(..), ConnectError(..), connect, checkedConnect, disconnect,
     withConnect, withCheckedConnect,
     ConnectInfo(..), defaultConnectInfo, parseConnectInfo, connectCluster,
     PortID(..),
