@@ -75,7 +75,8 @@ runRedisInternal conn (Redis redis) = do
 runRedisClusteredInternal :: Cluster.Connection -> IO ShardMap -> Redis a -> IO a
 runRedisClusteredInternal connection refreshShardmapAction (Redis redis) = do
     ref <- newIORef (SingleLine "nobody will ever see this")
-    r <- runReaderT redis (ClusteredEnv refreshShardmapAction connection ref) 
+    pipelineVar <- Cluster.newPipelineVar
+    r <- runReaderT redis (ClusteredEnv refreshShardmapAction connection ref pipelineVar)
     readIORef ref >>= (`seq` return ())
     return r
 
@@ -117,7 +118,7 @@ sendRequest req = do
                 setLastReply r
                 return r
             ClusteredEnv{..} -> do
-                r <- liftIO $ Cluster.requestPipelined refreshAction connection req
+                r <- liftIO $ Cluster.requestPipelined refreshAction connection pipelineVar req
                 lift (writeIORef clusteredLastReply r)
                 return r
     returnDecode r'

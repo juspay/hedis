@@ -13,6 +13,7 @@ import Database.Redis.Protocol
 import Control.Monad.IO.Unlift (MonadUnliftIO)
 import qualified Database.Redis.ProtocolPipelining as PP
 import qualified Database.Redis.Cluster as Cluster
+import Control.Concurrent.MVar (MVar)
 
 -- |Context for normal command execution, outside of transactions. Use
 --  'runRedis' to run actions of this type.
@@ -31,6 +32,7 @@ data RedisEnv
         { refreshAction :: IO Cluster.ShardMap
         , connection :: Cluster.Connection
         , clusteredLastReply :: IORef Reply
+        , pipelineVar :: MVar Cluster.Pipeline
         }
 
 envLastReply :: RedisEnv -> IORef Reply
