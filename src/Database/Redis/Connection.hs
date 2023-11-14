@@ -157,7 +157,7 @@ createConnection ConnInfo{..} = do
 --  until the first call to the server.
 connect :: ConnectInfo -> IO Connection
 connect cInfo@ConnInfo{..} = NonClusteredConnection <$>
-    createPool (createConnection cInfo) PP.disconnect 1 connectMaxIdleTime connectMaxConnections
+    createPool (createConnection cInfo) PP.disconnect 4 connectMaxIdleTime connectMaxConnections
 
 -- |Constructs a 'Connection' pool to a Redis server designated by the
 --  given 'ConnectInfo', then tests if the server is actually there.
@@ -224,7 +224,7 @@ connectCluster bootstrapConnInfo = do
             let
                 isConnectionReadOnly = connectReadOnly bootstrapConnInfo
                 clusterConnection = Cluster.connect withAuth infos shardMapVar timeoutOptUs isConnectionReadOnly refreshShardMapWithNodeConn
-            pool <- createPool (clusterConnect isConnectionReadOnly clusterConnection) Cluster.disconnect 1 (connectMaxIdleTime bootstrapConnInfo) (connectMaxConnections bootstrapConnInfo)
+            pool <- createPool (clusterConnect isConnectionReadOnly clusterConnection) Cluster.disconnect 4 (connectMaxIdleTime bootstrapConnInfo) (connectMaxConnections bootstrapConnInfo)
             return $ ClusteredConnection shardMapVar pool
     where
       withAuth host port timeout = do
