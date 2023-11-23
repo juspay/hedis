@@ -37,9 +37,17 @@ Master [git repository](http://github.com/informatikr/hedis):
 This library is written by Falko Peters <falko.peters@gmail.com>.
 Currently maintainer by Kostiantyn Rybnikov <k-bx@k-bx.com>.
 
-# How to Start Redis Server Using Flakes.
 
-Use Below Command to start a redis server. It will start redis server both in cluster mode and standalone mode. 
+# Getting started
+  -- Development
+      -- Services
+          -- Redis: You can start a redis server using flakes.
+                    Run Command: `nix run .#redis-service`
+                    This will start a redis server in standalone and clustered modes in your system.
+      -- DevShell
+          -- nix develop
+  -- Build
+     -- nix build
 
-`nix run .#redis-service`
+
 
