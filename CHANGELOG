@@ -1,5 +1,8 @@
 # Changelog for Hedis
 
+## 0.16.0
+* PR #31. Introduced Haskell Flakesi support in Hedis.
+
 ## 0.15.3
 * PR #27. Increased the default timeout for cluster connect, request node, and refresh Shard Map
 
@@ -272,3 +275,4 @@ Issue #136 fix slowlog parsing
   `zrank`, `zrevrank`, `zscore`.
 * Updated dependencies on `bytestring-lexing` and `stm`.
 * Minor improvements and fixes to the documentation.
+
