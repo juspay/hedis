@@ -5,7 +5,6 @@
     haskell-flake.url = "github:srid/haskell-flake";
     system.url = "github:nix-systems/default";
     services-flake.url = "github:juspay/services-flake";
-    systems.url = "github:nix-systems/default";
     process-compose-flake.url = "github:Platonic-Systems/process-compose-flake";
   };
   outputs = inputs@{ self, nixpkgs, flake-parts, ... }:
