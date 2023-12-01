@@ -1,3 +1,4 @@
+
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -22,7 +23,7 @@ import qualified Network.Socket as NS
 import qualified Data.HashMap.Strict as HM
 
 import qualified Database.Redis.ProtocolPipelining as PP
-import Database.Redis.Core(Redis, runRedisInternal, runRedisClusteredInternal)
+import Database.Redis.Core(Redis, runRedisInternal, runRedisClusteredInternal, runRedisInternalDebug, runRedisClusteredInternalDebug)
 import Database.Redis.Protocol(Reply(..))
 import Database.Redis.Cluster(ShardMap(..), Node, Shard(..))
 import qualified Database.Redis.Cluster as Cluster
@@ -189,6 +190,13 @@ runRedis (NonClusteredConnection pool) redis =
   withResource pool $ \conn -> runRedisInternal conn redis
 runRedis (ClusteredConnection _ pool) redis =
     withResource pool $ \conn -> runRedisClusteredInternal conn (refreshShardMap conn) redis
+
+-- for debug that return raw query ran and response
+runRedisDebug :: Connection -> Redis a -> IO (a,String)
+runRedisDebug (NonClusteredConnection pool) redis =
+    withResource pool $ \conn -> runRedisInternalDebug conn redis
+runRedisDebug (ClusteredConnection _ pool) redis =
+    withResource pool $ \conn -> runRedisClusteredInternalDebug conn (refreshShardMap conn) redis 
 
 newtype ClusterConnectError = ClusterConnectError Reply
     deriving (Eq, Show, Typeable)

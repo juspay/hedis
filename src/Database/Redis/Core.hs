@@ -8,6 +8,8 @@ module Database.Redis.Core (
     send, recv, sendRequest, sendToAllMasterNodes,
     runRedisInternal,
     runRedisClusteredInternal,
+    runRedisInternalDebug,
+    runRedisClusteredInternalDebug,
     RedisEnv(..),
 ) where
 
@@ -24,6 +26,7 @@ import qualified Database.Redis.ProtocolPipelining as PP
 import Database.Redis.Types
 import Database.Redis.Cluster(ShardMap)
 import qualified Database.Redis.Cluster as Cluster
+import qualified Data.ByteString.UTF8 as BUTF
 
 --------------------------------------------------------------------------------
 -- The Redis Monad
@@ -67,17 +70,37 @@ runRedisInternal :: PP.Connection -> Redis a -> IO a
 runRedisInternal conn (Redis redis) = do
   -- Dummy reply in case no request is sent.
   ref <- newIORef (SingleLine "nobody will ever see this")
-  r <- runReaderT redis (NonClusteredEnv conn ref)
+  r <- runReaderT redis (NonClusteredEnv conn ref Nothing)
   -- Evaluate last reply to keep lazy IO inside runRedis.
   readIORef ref >>= (`seq` return ())
   return r
 
+runRedisInternalDebug :: PP.Connection -> Redis a -> IO (a,String)
+runRedisInternalDebug conn (Redis redis) = do
+    -- Dummy reply in case no request is sent.
+    ref <- newIORef (SingleLine "nobody will ever see this")
+    rawCmd' <- newIORef mempty
+    r <- runReaderT redis (NonClusteredEnv conn ref (Just rawCmd'))
+    rQ' <- readIORef rawCmd'
+    -- Evaluate last reply to keep lazy IO inside runRedis.
+    readIORef ref >>= (`seq` return ())
+    return (r,rQ')
+
 runRedisClusteredInternal :: Cluster.Connection -> IO ShardMap -> Redis a -> IO a
 runRedisClusteredInternal connection refreshShardmapAction (Redis redis) = do
     ref <- newIORef (SingleLine "nobody will ever see this")
-    r <- runReaderT redis (ClusteredEnv refreshShardmapAction connection ref) 
+    r <- runReaderT redis (ClusteredEnv refreshShardmapAction connection ref Nothing) 
     readIORef ref >>= (`seq` return ())
     return r
+
+runRedisClusteredInternalDebug :: Cluster.Connection -> IO ShardMap -> Redis a -> IO (a,String)
+runRedisClusteredInternalDebug connection refreshShardmapAction (Redis redis) = do
+    ref <- newIORef (SingleLine "nobody will ever see this")
+    rawCmdCluster' <- newIORef mempty
+    r <- runReaderT redis (ClusteredEnv refreshShardmapAction connection ref (Just rawCmdCluster'))
+    rQ' <- readIORef rawCmdCluster'
+    r `seq` return ()
+    return (r,rQ')
 
 setLastReply :: Reply -> ReaderT RedisEnv IO ()
 setLastReply r = do
@@ -111,6 +134,7 @@ sendRequest :: (RedisCtx m f, RedisResult a)
 sendRequest req = do
     r' <- liftRedis $ Redis $ do
         env <- ask
+        _ <- liftIO $ extractQuery env req
         case env of
             NonClusteredEnv{..} -> do
                 r <- liftIO $ PP.request envConn (renderRequest req)
@@ -134,3 +158,19 @@ sendToAllMasterNodes req = do
                 r <- liftIO $ Cluster.requestMasterNodes connection req
                 return r
     return $ map decode r'
+
+
+
+extractQuery :: RedisEnv -> [B.ByteString] -> IO (Maybe String) 
+extractQuery  NonClusteredEnv{..} query = extractQueryHelper rawCmd query
+extractQuery ClusteredEnv{..} query = extractQueryHelper rawCmdCluster query
+    
+extractQueryHelper :: Maybe (IORef String) -> [B.ByteString] -> IO (Maybe String)
+extractQueryHelper maybeStr query = 
+        case maybeStr of
+        Nothing -> return Nothing
+        Just rw -> do
+            let resp = foldr (\x acc -> BUTF.toString x <> " " ++ acc) "" query
+            _ <- atomicModifyIORef' rw $ \cmd -> (resp,cmd)
+            return $ Just resp
+    

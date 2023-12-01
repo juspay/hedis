@@ -157,7 +157,7 @@ module Database.Redis (
     --
 
     -- * The Redis Monad
-    Redis(), runRedis,
+    Redis(), runRedis, runRedisDebug,
     unRedis, reRedis,
     RedisCtx(..), MonadRedis(..),
 
@@ -207,7 +207,8 @@ import Database.Redis.Connection
     , ConnectError(..)
     , Connection(..)
     , withConnect
-    , withCheckedConnect)
+    , withCheckedConnect
+    , runRedisDebug)
 import Database.Redis.ConnectionContext(PortID(..), ConnectionLostException(..), ConnectTimeout(..))
 import Database.Redis.PubSub
 import Database.Redis.Protocol
