@@ -76,6 +76,7 @@ library
                     bytestring >= 0.9,
                     bytestring-lexing >= 0.5,
                     exceptions,
+                    extra,
                     unordered-containers,
                     containers,
                     text,

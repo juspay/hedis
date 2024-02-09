@@ -25,6 +25,7 @@ import qualified Data.ByteString.Char8 as Char8
 import qualified Data.IORef as IOR
 import Data.Maybe(mapMaybe, fromMaybe)
 import Data.List(nub, sortBy, find)
+import Data.List.Extra (firstJust)
 import Data.Map(fromListWith, assocs)
 import Data.Function(on)
 import Control.Exception(Exception, SomeException, throwIO, BlockedIndefinitelyOnMVar(..), catches, Handler(..), try, fromException)
@@ -303,14 +304,14 @@ retryBatch :: MVar ShardMap -> IO ShardMap -> Connection -> Int -> [[B.ByteStrin
 retryBatch shardMapVar refreshShardmapAction conn retryCount requests replies =
     -- The last reply will be the `EXEC` reply containing the redirection, if
     -- there is one.
-    case last replies of
-        (Error errString) | B.isPrefixOf "MOVED" errString -> do
+    case replies of
+        ((any moved) -> True) -> do
             let (Connection _ _ _ infoMap _) = conn
             keys <- mconcat <$> mapM (requestKeys infoMap) requests
             hashSlot <- hashSlotForKeys (CrossSlotException requests) keys
             nodeConn <- nodeConnForHashSlot shardMapVar conn (MissingNodeException (head requests)) hashSlot
             requestNode nodeConn requests
-        (askingRedirection -> Just (host, port)) -> do
+        ((firstJust askingRedirection) -> Just (host, port)) -> do
             shardMap <- hasLocked $ readMVar shardMapVar
             let maybeAskNode = nodeConnWithHostAndPort shardMap conn host port
             case maybeAskNode of
