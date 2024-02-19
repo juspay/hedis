@@ -1,4 +1,5 @@
-{-# LANGUAGE CPP, OverloadedStrings, RecordWildCards, FlexibleContexts #-}
+{-# LANGUAGE CPP, OverloadedStrings, RecordWildCards, FlexibleContexts,DeriveAnyClass #-}
+{-# LANGUAGE DeriveGeneric #-}
 
 module Database.Redis.ManualCommands where
 
@@ -14,6 +15,9 @@ import Database.Redis.Core
 import Database.Redis.Protocol
 import Database.Redis.Types
 import qualified Database.Redis.Cluster.Command as CMD
+import GHC.Generics
+-- import GHC.Generics
+-- import Data.Aeson (ToJSON)
 
 
 objectRefcount
@@ -838,7 +842,7 @@ xadd key entryId fieldValues = xaddOpts key entryId fieldValues NoArgs
 data StreamsRecord = StreamsRecord
     { recordId :: ByteString
     , keyValues :: [(ByteString, ByteString)]
-    } deriving (Show, Eq)
+    } deriving (Show, Eq,Read,Generic)
 
 instance RedisResult StreamsRecord where
     decode (MultiBulk (Just [Bulk (Just recordId), MultiBulk (Just rawKeyValues)])) = do
@@ -874,7 +878,7 @@ defaultXreadOpts = XReadOpts { block = Nothing, recordCount = Nothing, noack = F
 data XReadResponse = XReadResponse
     { stream :: ByteString
     , records :: [StreamsRecord]
-    } deriving (Show, Eq)
+    } deriving (Show, Eq,Read,Generic)
 
 instance RedisResult XReadResponse where
     decode (MultiBulk (Just [Bulk (Just stream), MultiBulk (Just rawRecords)])) = do
