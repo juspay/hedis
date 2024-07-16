@@ -1431,3 +1431,23 @@ command = sendRequest ["COMMAND"]
 
 readOnly :: (RedisCtx m f) => m (f Status)
 readOnly = sendRequest ["READONLY"]
+
+fCall
+    :: (RedisCtx m f, RedisResult a)
+    => ByteString -- function name
+    -> [ByteString] -- list of keys
+    -> [ByteString] -- list of arguments
+    -> m (f a)
+fCall funcName keys args = sendRequest (["FCALL", funcName, encode (toInteger $ length keys)] ++ keys ++ args)
+
+data FunctionLoadOpts = REPLACE | NO_REPLACE deriving (Show, Eq)
+
+functionLoad
+    :: (RedisCtx m f)
+    => ByteString
+    -> FunctionLoadOpts
+    -> m (f ByteString)
+functionLoad functionStr opt =
+  case opt of
+    REPLACE -> sendRequest (["FUNCTION", "LOAD", "REPLACE", functionStr])
+    NO_REPLACE -> sendRequest (["FUNCTION", "LOAD", functionStr])

@@ -270,8 +270,8 @@ evaluatePipeline refreshShardmapAction conn@(Connection shardNodeVar infoMap _) 
                   Just (er :: TimeoutException) -> refreshShardmapAction >> throwIO er
                   _ -> getRandomConnection cc conn >>= (`executeRequests` r)
             ) (zip eresps requestsByNode)
-        -- check for any moved in both responses and continue the flow.
-        when (any (moved . rawResponse) resps) refreshShardMapVar
+        -- check for any moved or TryAgain in both responses and continue the flow.
+        when (any (movedOrTryAgain . rawResponse) resps) refreshShardMapVar
         retriedResps <- mapM (retry 0) resps
         return $ map rawResponse $ sortBy (on compare responseIndex) retriedResps
   where
@@ -303,9 +303,7 @@ retryBatch refreshShardmapAction conn@(Connection _ infoMap _) retryCount reques
     -- there is one.
     case last replies of
         (Error errString) | B.isPrefixOf "MOVED" errString -> do
-            keys <- mconcat <$> mapM (requestKeys infoMap) requests
-            hashSlot <- hashSlotForKeys (CrossSlotException requests) keys
-            nodeConn <- nodeConnForHashSlot conn ("retryBatch" : head requests) hashSlot
+            nodeConn <- getNodeConnection
             requestNode nodeConn requests
         (askingRedirection -> Just (host, port)) -> do
             maybeAskNode <- nodeConnWithHostAndPort conn host port
@@ -316,7 +314,19 @@ retryBatch refreshShardmapAction conn@(Connection _ infoMap _) retryCount reques
                         _ <- hasLocked $ refreshShardmapAction
                         retryBatch refreshShardmapAction conn (retryCount + 1) requests replies
                     _ -> throwIO $ MissingNodeException (head requests)
+        (Error errString) | B.isPrefixOf "TRYAGAIN" errString ->
+            if retryCount > 1
+              then return replies
+              else do
+                nodeConn <- getNodeConnection
+                newReplies <- requestNode nodeConn requests
+                retryBatch refreshShardmapAction conn (retryCount + 1) requests newReplies
         _ -> return replies
+    where
+        getNodeConnection = do
+            keys <- mconcat <$> mapM (requestKeys infoMap) requests
+            hashSlot <- hashSlotForKeys (CrossSlotException requests) keys
+            nodeConnForHashSlot conn ("retryBatch" : head requests) hashSlot
 
 --fix multi exec
 -- Like `evaluateOnPipeline`, except we expect to be able to run all commands
@@ -432,12 +442,18 @@ askingRedirection (Error errString) = case Char8.words errString of
     _ -> Nothing
 askingRedirection _ = Nothing
 
+movedOrTryAgain :: Reply -> Bool
+movedOrTryAgain (Error errString) = case Char8.words errString of
+    "MOVED":_ -> True
+    "TRYAGAIN":_ -> True
+    _ -> False
+movedOrTryAgain _ = False
+
 moved :: Reply -> Bool
 moved (Error errString) = case Char8.words errString of
     "MOVED":_ -> True
     _ -> False
 moved _ = False
-
 
 nodeConnWithHostAndPort :: Connection -> Host -> Port -> IO (Maybe NodeConnection)
 nodeConnWithHostAndPort (Connection shardNodeVar _ _) host port = do

@@ -275,7 +275,12 @@ clusterSetSlotImporting,
 clusterSetSlotMigrating,
 clusterGetKeysInSlot,
 command,
-readOnly
+readOnly,
+
+-- * Redis Function
+fCall,
+functionLoad,
+FunctionLoadOpts(..)
 -- * Unimplemented Commands
 -- |These commands are not implemented, as of now. Library
 --  users can implement these or other commands from
