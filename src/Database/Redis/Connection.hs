@@ -111,7 +111,8 @@ data ConnectInfo = ConnInfo
     --   get connected in this interval of time.
     , connectTLSParams      :: Maybe ClientParams
     -- ^ Optional TLS parameters. TLS will be enabled if this is provided.
-    , maybeAuthTokenRef          :: Maybe ShowableIORefText
+    , isDynamicAuthRequired :: Maybe Bool
+    , maybeAuthTokenRef     :: Maybe ShowableIORefText
     } deriving Show
 
 data ConnectError = ConnectAuthError Reply
@@ -149,6 +150,7 @@ defaultConnectInfo = ConnInfo
     , connectMaxIdleTime    = 30
     , connectTimeout        = Nothing
     , connectTLSParams      = Nothing
+    , isDynamicAuthRequired = Nothing
     , maybeAuthTokenRef     = Nothing
     }
 
@@ -163,6 +165,7 @@ defaultClusterConnectInfo = ConnInfo
     , connectMaxIdleTime    = 30
     , connectTimeout        = Nothing
     , connectTLSParams      = Nothing
+    , isDynamicAuthRequired = Nothing
     , maybeAuthTokenRef     = Nothing
     }
 
@@ -385,19 +388,20 @@ fetchAndUpdateRedisAuthToken ref manager = do
 -- - MOVE, SELECT
 -- - PUBLISH, SUBSCRIBE, PSUBSCRIBE, UNSUBSCRIBE, PUNSUBSCRIBE, RESET
 connectCluster :: ConnectInfo -> IO Connection
-connectCluster bootstrapConnInfo@ConnInfo{connectMaxConnections,connectMaxIdleTime} = do
+connectCluster bootstrapConnInfo@ConnInfo{connectMaxConnections,connectMaxIdleTime,isDynamicAuthRequired} = do
     -- putStrLn "ClusteredConnection"
     -- putStrLn $ show bootstrapConnInfo
-    
-
-    manager <- newManager tlsManagerSettings
-    authToken <- callFetchTokenAPI manager 
-    -- putStrLn $ show authToken
-    ref <- newIORef authToken
-    _ <- forkIO $ fetchAndUpdateRedisAuthToken ref manager
-    let newConnInfo = bootstrapConnInfo {maybeAuthTokenRef = Just (ShowableIORefText ref)}
+    newConnInfo <-
+        case isDynamicAuthRequired of
+            Just True -> do
+                manager <- newManager tlsManagerSettings
+                authToken <- callFetchTokenAPI manager 
+                -- putStrLn $ show authToken
+                ref <- newIORef authToken
+                _ <- forkIO $ fetchAndUpdateRedisAuthToken ref manager
+                return bootstrapConnInfo {maybeAuthTokenRef = Just (ShowableIORefText ref)}
+            _ -> return bootstrapConnInfo
     conn <- createConnection newConnInfo
-
     slotsResponse <- runRedisInternal conn clusterSlots
     shardMap <- case slotsResponse of
         Left e -> throwIO $ ClusterConnectError e
