@@ -185,7 +185,7 @@ createConnection ConnInfo{..} = do
                 authToken <- readIORef authTokenRef
                 return $ Just $ T.encodeUtf8 authToken
             _ -> return connectAuth
-    -- putStrLn $ "redis pass is" <> show connectAuth'
+    putStrLn $ "createConnection: redis pass is" <> show connectAuth'
 
     runRedisInternal conn' $ do
         -- AUTH
@@ -209,9 +209,19 @@ createConnection ConnInfo{..} = do
 --  until the first call to the server.
 connect :: ConnectInfo -> IO Connection
 connect cInfo@ConnInfo{..} = do
-    -- putStrLn "NonClusteredConnection"
+    putStrLn "NonClusteredConnection"
     -- putStrLn $ show cInfo
-    NonClusteredConnection <$> createPool (createConnection cInfo) PP.disconnect 1 connectMaxIdleTime connectMaxConnections
+    newConnInfo <-
+        case isDynamicAuthRequired of
+            Just True -> do
+                manager <- newManager tlsManagerSettings
+                authToken <- callFetchTokenAPI manager 
+                -- putStrLn $ show authToken
+                ref <- newIORef authToken
+                _ <- forkIO $ fetchAndUpdateRedisAuthToken ref manager
+                return cInfo {maybeAuthTokenRef = Just (ShowableIORefText ref)}
+            _ -> return cInfo
+    NonClusteredConnection <$> createPool (createConnection newConnInfo) PP.disconnect 1 connectMaxIdleTime connectMaxConnections
 
 -- |Constructs a 'Connection' pool to a Redis server designated by the
 --  given 'ConnectInfo', then tests if the server is actually there.
@@ -219,6 +229,7 @@ connect cInfo@ConnInfo{..} = do
 --  established.
 checkedConnect :: ConnectInfo -> IO Connection
 checkedConnect connInfo = do
+    putStrLn "inside checkedConnect"
     conn <- connect connInfo
     runRedis conn $ void ping
     return conn
@@ -354,7 +365,7 @@ callFetchTokenAPI manager = do
     let googleOAuthATReq = initialRequest { method = "POST", requestBody = RequestBodyLBS $ A.encode req , requestHeaders = [(hContentType, "application/json")]}
     responseOauth <- httpLbs googleOAuthATReq manager
     -- putStrLn $ "The status code was: " ++ (show $ statusCode $ responseStatus responseOauth)
-    -- putStrLn $ show $ responseBody responseOauth
+    putStrLn $ show $ responseBody responseOauth
     let resBody =  A.eitherDecode (responseBody responseOauth) :: Either String GoogleOAuthAccessTokenResponse
     case resBody of
         Left err -> do
@@ -389,7 +400,7 @@ fetchAndUpdateRedisAuthToken ref manager = do
 -- - PUBLISH, SUBSCRIBE, PSUBSCRIBE, UNSUBSCRIBE, PUNSUBSCRIBE, RESET
 connectCluster :: ConnectInfo -> IO Connection
 connectCluster bootstrapConnInfo@ConnInfo{connectMaxConnections,connectMaxIdleTime,isDynamicAuthRequired} = do
-    -- putStrLn "ClusteredConnection"
+    putStrLn "ClusteredConnection"
     -- putStrLn $ show bootstrapConnInfo
     newConnInfo <-
         case isDynamicAuthRequired of
@@ -430,7 +441,7 @@ connectWithAuth ConnInfo{connectTLSParams,connectAuth,connectReadOnly,connectTim
                 authToken <- readIORef authTokenRef
                 return $ Just $ T.encodeUtf8 authToken
             _ -> return connectAuth
-    -- putStrLn $ "redis pass is" <> show connectAuth'
+    putStrLn $ "connectWithAuth: redis pass is" <> show connectAuth'
     runRedisInternal conn' $ do
         -- AUTH
         case connectAuth' of
