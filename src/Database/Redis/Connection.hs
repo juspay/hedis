@@ -271,7 +271,7 @@ data GoogleOAuthAccessTokenResponse =
   GoogleOAuthAccessTokenSuccessResponse
     { access_token :: Text
     , scope :: Maybe Text
-    , expires_in :: Text
+    , expires_in :: Int
     , token_type :: Text
     }
   | GoogleOAuthAccessTokenFailureResponse
