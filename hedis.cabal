@@ -70,7 +70,6 @@ library
   exposed-modules:  Database.Redis
                   , Database.Redis.Sentinel
                   , Database.Redis.Core.Internal
-                  , Database.Redis.Connection
   build-depends:    scanner >= 0.2,
                     async >= 2.1,
                     base >= 4.8 && < 5,
@@ -107,7 +106,7 @@ library
       semigroups >= 0.11 && < 0.19
 
   other-modules:    Database.Redis.Core,
-                    -- Database.Redis.Connection,
+                    Database.Redis.Connection,
                     Database.Redis.Cluster,
                     Database.Redis.Cluster.HashSlot,
                     Database.Redis.Cluster.Command,
@@ -120,13 +119,14 @@ library
                     Database.Redis.ManualCommands,
                     Database.Redis.URL,
                     Database.Redis.ConnectionContext
+                    Database.Redis.GcpAuthToken
   other-extensions: StrictData
 
 benchmark hedis-benchmark
     default-language: Haskell2010
     type: exitcode-stdio-1.0
     hs-source-dirs: benchmark
-    main-is: ClusterBenchmark.hs
+    main-is: Benchmark.hs
     build-depends:
         base == 4.*,
         mtl >= 2.0,
@@ -134,7 +134,7 @@ benchmark hedis-benchmark
         bytestring,
         time >= 1.2,
         random
-    -- other-modules: Benchmark
+    other-modules: ClusterBenchmark
     ghc-options: -O2 -Wall -rtsopts
     if flag(dev)
       ghc-options: -Werror

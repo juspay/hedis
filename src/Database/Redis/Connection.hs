@@ -6,12 +6,12 @@
 {-# LANGUAGE DeriveGeneric #-}
 module Database.Redis.Connection where
 
-import Control.Exception as CE
+import Control.Exception
 import qualified Control.Monad.Catch as Catch
 import Control.Monad.IO.Class(liftIO, MonadIO)
-import Control.Monad(when,foldM, forever)
+import Control.Monad(when,foldM)
 
--- import Control.Concurrent.MVar(modifyMVar)
+import Control.Concurrent.MVar(modifyMVar)
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as Char8
 import Data.Functor(void)
@@ -36,24 +36,10 @@ import qualified Database.Redis.Cluster as Cluster
 import qualified Database.Redis.ConnectionContext as CC
 import qualified System.Timeout as T
 import Network.HTTP.Client
--- import Network.HTTP.Types.Status (statusCode)
 import Network.HTTP.Client.TLS
-import Data.Aeson as A hiding (Error)
-import Data.Text as T (replace, pack, Text)
 import qualified Data.Text.Encoding as T
-import qualified Data.Text.IO as T
--- import qualified Data.ByteString.Lazy.Char8 as BL
-import Network.HTTP.Types.Header
-import qualified Web.JWT as JWT
--- import Control.Exception (Exception, throwIO)
-import qualified Crypto.PubKey.RSA.Types as RSAT
-import qualified Data.Time as DT
-import qualified Data.Time.Clock.POSIX as DT
-import qualified Data.Map.Strict as DMS
-import Data.IORef
-import Control.Concurrent
-import GHC.Generics
-import Control.Applicative
+import Control.Concurrent(forkIO)
+import Data.IORef(readIORef, newIORef)
 import Database.Redis.Commands
     ( ping
     , select
@@ -64,6 +50,7 @@ import Database.Redis.Commands
     , ClusterSlotsResponse(..)
     , ClusterSlotsResponseEntry(..)
     , ClusterSlotsNode(..))
+import Database.Redis.GcpAuthToken(ShowableIORefText(..), fetchAndUpdateRedisAuthToken, callFetchTokenAPI)
 
 --------------------------------------------------------------------------------
 -- Connection
@@ -121,11 +108,6 @@ data ConnectError = ConnectAuthError Reply
 
 instance Exception ConnectError
 
-newtype ShowableIORefText = ShowableIORefText (IORef Text)
-
-instance Show ShowableIORefText where
-    show _ = "io ref text" :: String
-
 -- |Default information for connecting:
 --
 -- @
@@ -178,7 +160,6 @@ createConnection ConnInfo{..} = do
                Nothing -> return conn
                Just tlsParams -> PP.enableTLS tlsParams conn
     PP.beginReceiving conn'
-    -- putStrLn $ ("Making new connection with port" ) <> show connectPort
     connectAuth' <- 
         case maybeAuthTokenRef of
             Just (ShowableIORefText authTokenRef) -> do
@@ -216,7 +197,6 @@ connect cInfo@ConnInfo{..} = do
             Just True -> do
                 manager <- newManager tlsManagerSettings
                 authToken <- callFetchTokenAPI manager 
-                -- putStrLn $ show authToken
                 ref <- newIORef authToken
                 _ <- forkIO $ fetchAndUpdateRedisAuthToken ref manager
                 return cInfo {maybeAuthTokenRef = Just (ShowableIORefText ref)}
@@ -263,132 +243,6 @@ newtype ClusterConnectError = ClusterConnectError Reply
 
 instance Exception ClusterConnectError
 
-data MaybeException = MaybeException String deriving (Show)
-
-instance Exception MaybeException
-
-data GoogleOAuthAccessTokenResponse =
-  GoogleOAuthAccessTokenSuccessResponse
-    { access_token :: Text
-    , scope :: Maybe Text
-    , expires_in :: Int
-    , token_type :: Text
-    }
-  | GoogleOAuthAccessTokenFailureResponse
-    { error :: Text
-    , error_description :: Text
-    }
-  deriving (Show, Eq, Generic)
-
-instance A.FromJSON GoogleOAuthAccessTokenResponse where
-  parseJSON = withObject "GoogleOAuthAccessTokenResponse" $ \v ->
-    (GoogleOAuthAccessTokenSuccessResponse
-      <$> v .: "access_token"
-      <*> v .:? "scope"
-      <*> v .: "expires_in"
-      <*> v .: "token_type")
-    <|>
-    (GoogleOAuthAccessTokenFailureResponse
-      <$> v .: "error"
-      <*> v .: "error_description")
-
-data GoogleOAuthException = GoogleOAuthException String
-  deriving (Show)
-
-instance Exception GoogleOAuthException
-
-fromJustErr :: String -> Maybe a -> IO a
-fromJustErr errMsg maybeValue = case maybeValue of
-    Just value -> return value
-    Nothing    -> throwIO (MaybeException errMsg)
-
-getGoogleOAuthJOSEHeader :: Text -> JWT.Algorithm -> JWT.JOSEHeader
-getGoogleOAuthJOSEHeader typ alg =
-  JWT.JOSEHeader
-    { JWT.typ = Just typ
-    , JWT.cty = Nothing
-    , JWT.alg = Just alg
-    , JWT.kid = Nothing
-    }
-
-getPOSIXSecondsTimestamp :: IO Int
-getPOSIXSecondsTimestamp = floor . DT.utcTimeToPOSIXSeconds <$> DT.getCurrentTime
-
-getGoogleOAuthJWTClaimsSet :: IO JWT.JWTClaimsSet
-getGoogleOAuthJWTClaimsSet = do
-  currentTimestamp <- getPOSIXSecondsTimestamp
-  tokenExpiry <- fromMaybe 45 . (>>= readMaybe) <$> lookupEnv "GOOGLE_OAUTH_TOKEN_EXPIRY"
-  issuer <- T.pack . fromMaybe "upi-callbacks@jp-dev-chaos.iam.gserviceaccount.com"  <$> lookupEnv "GOOGLE_OAUTH_ISSUER"
-  subject <- T.pack . fromMaybe "upi-callbacks@jp-dev-chaos.iam.gserviceaccount.com" <$> lookupEnv "GOOGLE_OAUTH_SUBJECT"
-  audience <- T.pack . fromMaybe "https://oauth2.googleapis.com/token" <$> lookupEnv "GOOGLE_OAUTH_AUDIENCE"
-  scope <- T.pack . fromMaybe "https://www.googleapis.com/auth/nbupayments" <$> lookupEnv "GOOGLE_OAUTH_SCOPE"
-  let iat = fromInteger (toInteger currentTimestamp)
-      exp' = fromInteger (toInteger (currentTimestamp + tokenExpiry * 60))
-  return
-    JWT.JWTClaimsSet
-      { JWT.iss = JWT.stringOrURI issuer
-      , JWT.sub = JWT.stringOrURI subject
-      , JWT.aud = Left <$> JWT.stringOrURI audience
-      , JWT.exp = JWT.numericDate (exp' :: DT.NominalDiffTime)
-      , JWT.nbf = Nothing
-      , JWT.iat = JWT.numericDate (iat :: DT.NominalDiffTime)
-      , JWT.jti = Nothing
-      , JWT.unregisteredClaims = JWT.ClaimsMap $ DMS.singleton "scope" (A.String $ scope)
-      }
-
-getGoogleOAuthSigner :: IO (Maybe JWT.Signer)
-getGoogleOAuthSigner = fmap JWT.RSAPrivateKey <$> getGoogleOAuthPrivateKey
-
-getGoogleOAuthPrivateKey :: IO (Maybe RSAT.PrivateKey)
-getGoogleOAuthPrivateKey = do
-  filePath <- fromMaybe "/Users/piyush.choudhary/repos/haskull/helloworld/gpay-oauth-d.txt"  <$> lookupEnv "GOOGLE_OAUTH_PRIVATE_KEY"
-  let fileData = T.readFile filePath
-      key = T.encodeUtf8 . T.replace (T.pack "\\n") (T.pack "\n") <$> fileData
-  JWT.readRsaSecret <$> key
-
-createGoogleOAuthATReq :: IO A.Value
-createGoogleOAuthATReq = do
-    let header = getGoogleOAuthJOSEHeader "JWT" JWT.RS256
-    googleOAuthSigner <- getGoogleOAuthSigner
-    key <- fromJustErr "getGoogleOAuthSignedJWT-key" googleOAuthSigner
-    jwt <- JWT.encodeSigned key header <$> getGoogleOAuthJWTClaimsSet
-    grantType <- T.pack . fromMaybe "urn:ietf:params:oauth:grant-type:jwt-bearer" <$> lookupEnv "GOOGLE_OAUTH_GRANT_TYPE"
-    let googleOAuthATReq = A.object ["grant_type" A..= (grantType :: Text), "assertion" A..= jwt]
-    return googleOAuthATReq
-
-callFetchTokenAPI :: Manager -> IO Text
-callFetchTokenAPI manager = do
-    -- putStrLn "inside callFetchTokenAPI"
-    req <- createGoogleOAuthATReq
-    googleOAuthTokenUrl <- fromMaybe "http://localhost:3000/get-pass" <$> lookupEnv "GOOGLE_OAUTH_TOKEN_URL"
-    initialRequest <- parseRequest googleOAuthTokenUrl
-    let googleOAuthATReq = initialRequest { method = "POST", requestBody = RequestBodyLBS $ A.encode req , requestHeaders = [(hContentType, "application/json")]}
-    responseOauth <- httpLbs googleOAuthATReq manager
-    -- putStrLn $ "The status code was: " ++ (show $ statusCode $ responseStatus responseOauth)
-    putStrLn $ show $ responseBody responseOauth
-    let resBody =  A.eitherDecode (responseBody responseOauth) :: Either String GoogleOAuthAccessTokenResponse
-    case resBody of
-        Left err -> do
-            -- putStrLn "err"
-            -- putStrLn err
-            throwIO $ GoogleOAuthException err
-        Right (GoogleOAuthAccessTokenSuccessResponse accessToken _ _ _) -> return accessToken
-        Right (GoogleOAuthAccessTokenFailureResponse _ _) -> throwIO $ GoogleOAuthException "err"
-
-callAPIWithExceptionHandling :: Manager -> IO (Either SomeException Text)
-callAPIWithExceptionHandling manager = try $ callFetchTokenAPI manager
-
-fetchAndUpdateRedisAuthToken :: IORef Text -> Manager -> IO ()
-fetchAndUpdateRedisAuthToken ref manager = do
-    authTokenFetchInterval <- fromMaybe 500000 . (>>= readMaybe) <$> lookupEnv "AUTHTOKEN_FETCH_INTERVAL"
-    forever $ do
-        -- putStrLn "fetchAndUpdateRedisAuthToken running"
-        authToken <- callAPIWithExceptionHandling manager
-        case authToken of
-            Right authToken' -> writeIORef ref authToken'
-            Left ex -> putStrLn $ "Caught exception: " ++ show ex
-        threadDelay authTokenFetchInterval
-
 -- |Constructs a 'ShardMap' of connections to clustered nodes. The argument is
 -- a 'ConnectInfo' for any node in the cluster
 --
@@ -400,13 +254,11 @@ fetchAndUpdateRedisAuthToken ref manager = do
 connectCluster :: ConnectInfo -> IO Connection
 connectCluster bootstrapConnInfo@ConnInfo{connectMaxConnections,connectMaxIdleTime,isDynamicAuthRequired} = do
     putStrLn "ClusteredConnection"
-    -- putStrLn $ show bootstrapConnInfo
     newConnInfo <-
         case isDynamicAuthRequired of
             Just True -> do
                 manager <- newManager tlsManagerSettings
                 authToken <- callFetchTokenAPI manager 
-                -- putStrLn $ show authToken
                 ref <- newIORef authToken
                 _ <- forkIO $ fetchAndUpdateRedisAuthToken ref manager
                 return bootstrapConnInfo {maybeAuthTokenRef = Just (ShowableIORefText ref)}
@@ -416,7 +268,6 @@ connectCluster bootstrapConnInfo@ConnInfo{connectMaxConnections,connectMaxIdleTi
     shardMap <- case slotsResponse of
         Left e -> throwIO $ ClusterConnectError e
         Right slots -> do
-            -- putStrLn $ show slots
             shardMapFromClusterSlotsResponse slots
     commandInfos <- runRedisInternal conn command
     case commandInfos of
@@ -433,7 +284,6 @@ connectWithAuth ConnInfo{connectTLSParams,connectAuth,connectReadOnly,connectTim
                 Nothing -> return conn
                 Just tlsParams -> PP.enableTLS tlsParams conn
     PP.beginReceiving conn'
-    -- putStrLn $ ("Making new connection in authfun with port" ) <> show port
     connectAuth' <- 
         case maybeAuthTokenRef of
             Just (ShowableIORefText authTokenRef) -> do
