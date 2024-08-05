@@ -17,6 +17,7 @@ import Prelude
 #if __GLASGOW_HASKELL__ < 710
 import Control.Applicative
 #endif
+import Control.Concurrent.MVar (newMVar)
 import Control.Monad.Reader
 import qualified Data.ByteString as B
 import Data.IORef
@@ -89,7 +90,9 @@ runRedisInternalDebug conn (Redis redis) = do
 runRedisClusteredInternal :: Cluster.Connection -> IO ShardMap -> Redis a -> IO a
 runRedisClusteredInternal connection refreshShardmapAction (Redis redis) = do
     ref <- newIORef (SingleLine "nobody will ever see this")
-    r <- runReaderT redis (ClusteredEnv refreshShardmapAction connection ref Nothing) 
+    stateVar <- liftIO $ newMVar $ Cluster.Pending []
+    pipelineVar <- liftIO $ newMVar $ Cluster.Pipeline stateVar
+    r <- runReaderT redis (ClusteredEnv refreshShardmapAction connection ref pipelineVar Nothing) 
     readIORef ref >>= (`seq` return ())
     return r
 
@@ -141,7 +144,7 @@ sendRequest req = do
                 setLastReply r
                 return r
             ClusteredEnv{..} -> do
-                r <- liftIO $ Cluster.requestPipelined refreshAction connection req
+                r <- liftIO $ Cluster.requestPipelined refreshAction connection req pipeline
                 lift (writeIORef clusteredLastReply r)
                 return r
     returnDecode r'

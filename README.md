@@ -36,3 +36,26 @@ Master [git repository](http://github.com/informatikr/hedis):
 
 This library is written by Falko Peters <falko.peters@gmail.com>.
 Currently maintainer by Kostiantyn Rybnikov <k-bx@k-bx.com>.
+
+
+## Getting started
+### Development
+#### Services
+You can start a redis server using flakes.
+```
+nix run .#redis-service
+```
+This will start a redis server in standalone and clustered modes in your system.
+
+#### DevShell
+```
+nix develop
+```
+
+### Build
+```
+nix build
+```
+
+
+

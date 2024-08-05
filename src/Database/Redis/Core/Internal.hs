@@ -10,6 +10,7 @@ import Control.Monad.Fail (MonadFail)
 import Control.Monad.Reader
 import Data.IORef
 import Database.Redis.Protocol
+import Control.Concurrent.MVar (MVar)
 import Control.Monad.IO.Unlift (MonadUnliftIO)
 import qualified Database.Redis.ProtocolPipelining as PP
 import qualified Database.Redis.Cluster as Cluster
@@ -31,6 +32,7 @@ data RedisEnv
         { refreshAction :: IO Cluster.ShardMap
         , connection :: Cluster.Connection
         , clusteredLastReply :: IORef Reply
+        , pipeline :: MVar Cluster.Pipeline
         , rawCmdCluster :: Maybe (IORef String)
         }
 

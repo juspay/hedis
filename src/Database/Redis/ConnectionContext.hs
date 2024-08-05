@@ -17,8 +17,6 @@ module Database.Redis.ConnectionContext (
   , ioErrorToConnLost
 ) where
 
-import           Control.Concurrent (threadDelay)
-import           Control.Concurrent.Async (race)
 import Control.Monad(when)
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Lazy as LB
@@ -35,6 +33,7 @@ import System.Environment (lookupEnv)
 import System.IO(Handle, hSetBinaryMode, hClose, IOMode(..), hFlush, hIsOpen)
 import System.IO.Error(catchIOError)
 import Text.Read (readMaybe)
+import System.Timeout (timeout)
 
 data ConnectionContext = NormalHandle Handle | TLSContext TLS.Context
 
@@ -76,11 +75,11 @@ connect hostName portId timeoutOpt =
         hConnect = do
           phaseMVar <- newMVar PhaseUnknown
           let doConnect = hConnect' phaseMVar
-          envTimeout <- round . (\x -> (x :: Time.NominalDiffTime) * 1000000) . realToFrac . fromMaybe (0.5 :: Double) . (>>= readMaybe) <$> lookupEnv "REDIS_CONNECT_TIMEOUT"
-          result <- race doConnect (threadDelay $ fromMaybe envTimeout timeoutOpt)
+          envTimeout <- round . (\x -> (x :: Time.NominalDiffTime) * 1000000) . realToFrac . fromMaybe (2.0 :: Double) . (>>= readMaybe) <$> lookupEnv "REDIS_CONNECT_TIMEOUT"
+          result <- timeout (fromMaybe envTimeout timeoutOpt) doConnect
           case result of
-            Left h -> return h
-            Right () -> do
+            Just h -> return h
+            Nothing -> do
               phase <- readMVar phaseMVar
               errConnectTimeout phase
         hConnect' mvar = bracketOnError createSock NS.close $ \sock -> do

@@ -1,5 +1,8 @@
 # Changelog for Hedis
 
+## 0.15.3
+* PR #27. Increased the default timeout for cluster connect, request node, and refresh Shard Map
+
 ## 0.15.2
 * PR #14. Updated with hedis upstream
 * PR #13. Added timeout for commands
@@ -269,3 +272,4 @@ Issue #136 fix slowlog parsing
   `zrank`, `zrevrank`, `zscore`.
 * Updated dependencies on `bytestring-lexing` and `stm`.
 * Minor improvements and fixes to the documentation.
+

@@ -6,7 +6,7 @@ import Control.Applicative
 import Data.Monoid (mappend)
 #endif
 import qualified Control.Concurrent.Async as Async
-import Control.Exception (try)
+import Control.Exception (try,SomeException)
 import Control.Concurrent
 import Control.Monad
 import Control.Monad.Trans
@@ -16,7 +16,6 @@ import Data.Time.Clock.POSIX
 import qualified Test.Framework as Test (Test)
 import qualified Test.Framework.Providers.HUnit as Test (testCase)
 import qualified Test.HUnit as HUnit
-
 import Database.Redis
 
 ------------------------------------------------------------------------------
@@ -472,15 +471,16 @@ testScripting conn = testCase "scripting" go conn
             -- start long running script from another client
             configSet "lua-time-limit" "100"        >>=? Ok
             evalFinished <- liftIO newEmptyMVar
-            asyncScripting <- liftIO $ Async.async $ runRedis conn $ do
-                -- we must pattern match to block the thread
-                (eval "while true do end" [] []
-                    :: Redis (Either Reply Integer)) >>= \case
-                    Left _ -> return ()
-                    _ -> error "impossible"
-                liftIO (putMVar evalFinished ())
+            asyncScripting <- liftIO $ Async.async $ do
+                (try $ runRedis conn $
+                    -- we must pattern match to block the thread
+                    (eval "while true do end" [] []
+                        :: Redis (Either Reply Integer)) >>= \case
+                        Left _ -> return ()
+                        _ -> error "impossible") :: IO (Either SomeException ())
+                putMVar evalFinished ()
                 return ()
-            liftIO (threadDelay 500000) -- 0.5s
+            liftIO (threadDelay 300000) -- 0.3s -- default request timeout is 0.5s
             scriptKill                              >>=? Ok
             () <- liftIO (takeMVar evalFinished)
             liftIO $ Async.wait asyncScripting
