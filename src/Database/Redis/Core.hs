@@ -98,9 +98,11 @@ runRedisClusteredInternal connection refreshShardmapAction (Redis redis) = do
 
 runRedisClusteredInternalDebug :: Cluster.Connection -> IO ShardMap -> Redis a -> IO (a,String)
 runRedisClusteredInternalDebug connection refreshShardmapAction (Redis redis) = do
-    ref <- newIORef (SingleLine "nobody will ever see this")
+    ref <- newIORef (SingleLine "runRedisClusteredInternalDebug nobody will ever see this")
+    stateVar <- liftIO $ newMVar $ Cluster.Pending []
+    pipelineVar <- liftIO $ newMVar $ Cluster.Pipeline stateVar
     rawCmdCluster' <- newIORef mempty
-    r <- runReaderT redis (ClusteredEnv refreshShardmapAction connection ref (Just rawCmdCluster'))
+    r <- runReaderT redis (ClusteredEnv refreshShardmapAction connection ref pipelineVar (Just rawCmdCluster'))
     rQ' <- readIORef rawCmdCluster'
     r `seq` return ()
     return (r,rQ')
