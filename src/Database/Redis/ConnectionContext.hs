@@ -117,7 +117,7 @@ connectSocket addrs = do
   case (sockM, rest) of
     (Right sock, _) -> return sock
     (Left err, [])  -> throwIO err
-    (Left _err, _)   -> connectSocket rest
+    (Left _err, _)  -> connectSocket rest
   where
     tryConnect :: NS.AddrInfo -> IO (Either IOError NS.Socket)
     tryConnect addr = bracketOnError createSock NS.close $ \sock ->
@@ -130,8 +130,9 @@ connectSocket addrs = do
                                (NS.addrProtocol addr)
     pickRandomAddr = do
       i <- randomRIO (0, length addrs - 1)
-      let rest = take (i-1) addrs ++ drop (i+1) addrs
-      pure (addrs !! i, rest)
+      let front = take (if i<2 then 0 else i-1) addrs
+          back = drop (i+1) addrs
+      pure (addrs !! i, front ++ back)
 
 send :: ConnectionContext -> B.ByteString -> IO ()
 send (NormalHandle h) requestData =
