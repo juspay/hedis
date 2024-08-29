@@ -71,7 +71,7 @@ runRedisInternal :: PP.Connection -> Redis a -> IO a
 runRedisInternal conn (Redis redis) = do
   -- Dummy reply in case no request is sent.
   ref <- newIORef (SingleLine "nobody will ever see this")
-  r <- runReaderT redis (NonClusteredEnv conn ref Nothing)
+  r <- runReaderT redis (NonClusteredEnv conn ref)
   -- Evaluate last reply to keep lazy IO inside runRedis.
   readIORef ref >>= (`seq` return ())
   return r
@@ -81,7 +81,7 @@ runRedisClusteredInternal connection refreshShardmapAction (Redis redis) = do
     ref <- newIORef (SingleLine "nobody will ever see this")
     stateVar <- liftIO $ newMVar $ Cluster.Pending []
     pipelineVar <- liftIO $ newMVar $ Cluster.Pipeline stateVar
-    r <- runReaderT redis (ClusteredEnv refreshShardmapAction connection ref pipelineVar Nothing) 
+    r <- runReaderT redis (ClusteredEnv refreshShardmapAction connection ref pipelineVar) 
     readIORef ref >>= (`seq` return ())
     return r
 
@@ -117,7 +117,6 @@ sendRequest :: (RedisCtx m f, RedisResult a)
 sendRequest req = do
     r' <- liftRedis $ Redis $ do
         env <- ask
-        _ <- liftIO $ extractQuery env req
         case env of
             NonClusteredEnv{..} -> do
                 r <- liftIO $ PP.request envConn (renderRequest req)
@@ -141,19 +140,4 @@ sendToAllMasterNodes req = do
                 r <- liftIO $ Cluster.requestMasterNodes connection req
                 return r
     return $ map decode r'
-
-
-
-extractQuery :: RedisEnv -> [B.ByteString] -> IO (Maybe String) 
-extractQuery  NonClusteredEnv{..} query = extractQueryHelper rawCmd query
-extractQuery ClusteredEnv{..} query = extractQueryHelper rawCmdCluster query
-    
-extractQueryHelper :: Maybe (IORef String) -> [B.ByteString] -> IO (Maybe String)
-extractQueryHelper maybeStr query = 
-        case maybeStr of
-        Nothing -> return Nothing
-        Just rw -> do
-            let resp = foldr (\x acc -> BUTF.toString x <> " " ++ acc) "" query
-            _ <- atomicModifyIORef' rw $ \cmd -> (resp,cmd)
-            return $ Just resp
     
