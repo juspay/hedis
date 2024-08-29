@@ -29,7 +29,7 @@ import Data.Maybe (fromMaybe)
 import Text.Read (readMaybe)
 
 import qualified Database.Redis.ProtocolPipelining as PP
-import Database.Redis.Core(Redis, runRedisInternal, runRedisClusteredInternal, runRedisInternalDebug, runRedisClusteredInternalDebug)
+import Database.Redis.Core(Redis, runRedisInternal, runRedisClusteredInternal)
 import Database.Redis.Protocol(Reply(..))
 import Database.Redis.Cluster(ShardMap(..), Node(..), Shard(..))
 import qualified Database.Redis.Cluster as Cluster

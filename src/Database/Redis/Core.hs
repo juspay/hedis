@@ -8,9 +8,7 @@ module Database.Redis.Core (
     send, recv, sendRequest, sendToAllMasterNodes,
     runRedisInternal,
     runRedisClusteredInternal,
-    runRedisInternalDebug,
-    runRedisClusteredInternalDebug,
-    RedisEnv(..),
+    RedisEnv(..)
 ) where
 
 import Prelude
@@ -27,7 +25,6 @@ import qualified Database.Redis.ProtocolPipelining as PP
 import Database.Redis.Types
 import Database.Redis.Cluster(ShardMap)
 import qualified Database.Redis.Cluster as Cluster
-import qualified Data.ByteString.UTF8 as BUTF
 
 --------------------------------------------------------------------------------
 -- The Redis Monad
