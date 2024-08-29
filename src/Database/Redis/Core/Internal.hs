@@ -27,13 +27,12 @@ newtype Redis a =
 deriving instance MonadFail Redis
 #endif
 data RedisEnv
-    = NonClusteredEnv { envConn :: PP.Connection, nonClusteredLastReply :: IORef Reply, rawCmd :: Maybe (IORef String) }
+    = NonClusteredEnv { envConn :: PP.Connection, nonClusteredLastReply :: IORef Reply }
     | ClusteredEnv
         { refreshAction :: IO Cluster.ShardMap
         , connection :: Cluster.Connection
         , clusteredLastReply :: IORef Reply
         , pipeline :: MVar Cluster.Pipeline
-        , rawCmdCluster :: Maybe (IORef String)
         }
 
 envLastReply :: RedisEnv -> IORef Reply

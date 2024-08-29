@@ -76,17 +76,6 @@ runRedisInternal conn (Redis redis) = do
   readIORef ref >>= (`seq` return ())
   return r
 
-runRedisInternalDebug :: PP.Connection -> Redis a -> IO (a,String)
-runRedisInternalDebug conn (Redis redis) = do
-    -- Dummy reply in case no request is sent.
-    ref <- newIORef (SingleLine "nobody will ever see this")
-    rawCmd' <- newIORef mempty
-    r <- runReaderT redis (NonClusteredEnv conn ref (Just rawCmd'))
-    rQ' <- readIORef rawCmd'
-    -- Evaluate last reply to keep lazy IO inside runRedis.
-    readIORef ref >>= (`seq` return ())
-    return (r,rQ')
-
 runRedisClusteredInternal :: Cluster.Connection -> IO ShardMap -> Redis a -> IO a
 runRedisClusteredInternal connection refreshShardmapAction (Redis redis) = do
     ref <- newIORef (SingleLine "nobody will ever see this")
@@ -95,17 +84,6 @@ runRedisClusteredInternal connection refreshShardmapAction (Redis redis) = do
     r <- runReaderT redis (ClusteredEnv refreshShardmapAction connection ref pipelineVar Nothing) 
     readIORef ref >>= (`seq` return ())
     return r
-
-runRedisClusteredInternalDebug :: Cluster.Connection -> IO ShardMap -> Redis a -> IO (a,String)
-runRedisClusteredInternalDebug connection refreshShardmapAction (Redis redis) = do
-    ref <- newIORef (SingleLine "runRedisClusteredInternalDebug nobody will ever see this")
-    stateVar <- liftIO $ newMVar $ Cluster.Pending []
-    pipelineVar <- liftIO $ newMVar $ Cluster.Pipeline stateVar
-    rawCmdCluster' <- newIORef mempty
-    r <- runReaderT redis (ClusteredEnv refreshShardmapAction connection ref pipelineVar (Just rawCmdCluster'))
-    rQ' <- readIORef rawCmdCluster'
-    r `seq` return ()
-    return (r,rQ')
 
 setLastReply :: Reply -> ReaderT RedisEnv IO ()
 setLastReply r = do

@@ -208,13 +208,6 @@ runRedis (NonClusteredConnection pool) redis =
 runRedis (ClusteredConnection bootstrapConnInfo conn) redis =
     runRedisClusteredInternal conn (refreshShardMap bootstrapConnInfo conn) redis
 
--- for debug that return raw query ran and response
-runRedisDebug :: Connection -> Redis a -> IO (a,String)
-runRedisDebug (NonClusteredConnection pool) redis =
-    withResource pool $ \conn -> runRedisInternalDebug conn redis
-runRedisDebug (ClusteredConnection bootstrapConnInfo conn) redis =
-    runRedisClusteredInternalDebug conn (refreshShardMap bootstrapConnInfo conn) redis 
-
 newtype ClusterConnectError = ClusterConnectError Reply
     deriving (Eq, Show, Typeable)
 
