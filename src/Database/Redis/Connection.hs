@@ -39,7 +39,7 @@ import Network.HTTP.Client
 import Network.HTTP.Client.TLS
 import qualified Data.Text.Encoding as T
 import Control.Concurrent(forkIO)
-import Data.IORef(readIORef, newIORef)
+import Data.IORef(readIORef, newIORef, writeIORef)
 import Database.Redis.Commands
     ( ping
     , select
@@ -175,7 +175,7 @@ createConnection ConnInfo{..} = do
             Just pass -> do
               resp <- auth pass
               case resp of
-                Left r -> liftIO $ throwIO $ ConnectAuthError r
+                Left r -> retryAuthIfDynamicAuthIsEnabled isDynamicAuthRequired maybeAuthTokenRef r
                 _      -> return ()
         -- SELECT
         when (connectDatabase /= 0) $ do
@@ -278,7 +278,7 @@ connectCluster bootstrapConnInfo@ConnInfo{connectMaxConnections,connectMaxIdleTi
             return $ ClusteredConnection newConnInfo clusterConnection
 
 connectWithAuth :: ConnectInfo -> Cluster.Host -> CC.PortID -> IO CC.ConnectionContext
-connectWithAuth ConnInfo{connectTLSParams,connectAuth,connectReadOnly,connectTimeout,maybeAuthTokenRef} host port = do
+connectWithAuth ConnInfo{connectTLSParams,connectAuth,connectReadOnly,connectTimeout,maybeAuthTokenRef,isDynamicAuthRequired} host port = do
     conn <- PP.connect host port $ clusterConnectTimeoutinUs <$> connectTimeout
     conn' <- case connectTLSParams of
                 Nothing -> return conn
@@ -298,7 +298,7 @@ connectWithAuth ConnInfo{connectTLSParams,connectAuth,connectReadOnly,connectTim
             Just pass -> do
                 resp <- auth pass
                 case resp of
-                    Left r -> liftIO $ throwIO $ ConnectAuthError r
+                    Left r -> retryAuthIfDynamicAuthIsEnabled isDynamicAuthRequired maybeAuthTokenRef r
                     _      -> return ()
     when connectReadOnly $ do
         runRedisInternal conn' readOnly >> return()
@@ -382,3 +382,19 @@ refreshShardMapWithConn pipelineConn _ = do
         Right slots -> case clusterSlotsResponseEntries slots of 
             [] -> throwIO $ ClusterConnectError $ SingleLine "empty slotsResponse"
             _ -> shardMapFromClusterSlotsResponse slots
+
+
+retryAuthIfDynamicAuthIsEnabled :: Maybe Bool -> Maybe ShowableIORefText -> Reply -> Redis ()
+retryAuthIfDynamicAuthIsEnabled isDynamicAuthRequired maybeAuthTokenRef r = do
+    case (isDynamicAuthRequired, maybeAuthTokenRef) of
+        (Just True, Just (ShowableIORefText authTokenRef)) -> do
+            liftIO $ putStrLn "Wrong auth passed to redis, retrying.. "
+            manager <- liftIO $ newManager tlsManagerSettings
+            authToken <- liftIO $ callFetchTokenAPI manager 
+            resp <- auth $ T.encodeUtf8 authToken
+            case resp of
+                Left reply -> liftIO $ throwIO $ ConnectAuthError reply
+                _      -> do    
+                    liftIO $ writeIORef authTokenRef authToken
+                    return ()
+        _ -> liftIO $ throwIO $ ConnectAuthError r
