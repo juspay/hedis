@@ -1,4 +1,4 @@
-{-# LANGUAGE CPP, OverloadedStrings, RecordWildCards, LambdaCase #-}
+{-# LANGUAGE CPP, OverloadedStrings, RecordWildCards, LambdaCase, TemplateHaskell #-}
 module Tests where
 
 #if __GLASGOW_HASKELL__ < 710
@@ -13,6 +13,7 @@ import Control.Monad.Trans
 import qualified Data.List as L
 import Data.Time
 import Data.Time.Clock.POSIX
+import Data.FileEmbed (embedFile)
 import qualified Test.Framework as Test (Test)
 import qualified Test.Framework.Providers.HUnit as Test (testCase)
 import qualified Test.HUnit as HUnit
@@ -40,6 +41,15 @@ redis >>=? expected = do
     liftIO $ case a of
         Left reply   -> HUnit.assertFailure $ "Redis error: " ++ show reply
         Right actual -> expected HUnit.@=? actual
+
+(>>=?!) :: (Eq a, Show a) => Redis [Either Reply a] -> [a] -> Redis ()
+redis >>=?! expected = do
+    as <- redis
+    actual <- liftIO $ mapM (\case
+        Left reply   -> HUnit.assertFailure $ "Redis error: " ++ show reply
+        Right actual -> pure actual
+        ) as
+    liftIO $ expected HUnit.@=? actual
 
 assert :: Bool -> Redis ()
 assert = liftIO . HUnit.assert
@@ -788,3 +798,25 @@ testXTrim = testCase "xtrim" $ do
     xadd "somestream" "124" [("key4", "value4")]
     xadd "somestream" "125" [("key5", "value5")]
     xtrim "somestream" (Maxlen 2) >>=? 3
+
+testFunctionLoad :: Test
+testFunctionLoad = testCase "functionLoad" $ do
+    let fCallLib = $(embedFile "test/fcall_test.lua")
+    res <- functionLoad fCallLib (Just REPLACE)
+    (pure res) >>=?! replicate (length res) "hedis_test"
+
+testFCall :: Test
+testFCall = testCase "fCall" $ do
+    fCall "set_operations" ["fCalltest{same}", "fCalltest2{same}"] ["2", "bar", "bar2"] >>=? Ok
+    get "fCalltest{same}" >>=? (Just "bar")
+    get "fCalltest2{same}" >>=? (Just "bar2")
+
+testFunctionList :: Test
+testFunctionList = testCase "functionList" $ do
+    res <- functionList (FunctionListOpts (Just "hedis_test") Nothing)
+    (pure res) >>=? (FunctionListResponse [FunctionListLibraryEntry "hedis_test" "LUA" [FunctionListFunctionEntry "set_operations" Nothing []] Nothing])
+
+testFunctionDelete :: Test
+testFunctionDelete = testCase "functionDelete" $ do
+    res <- functionDelete "hedis_test"
+    (pure res) >>=?! replicate (length res) Ok

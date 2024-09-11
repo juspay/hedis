@@ -279,8 +279,15 @@ readOnly,
 
 -- * Redis Function
 fCall,
+fCallRo,
+FunctionLoadOpts(..),
 functionLoad,
-FunctionLoadOpts(..)
+functionDelete,
+FunctionListOpts(..),
+FunctionListResponse(..),
+FunctionListLibraryEntry(..),
+FunctionListFunctionEntry(..),
+functionList
 -- * Unimplemented Commands
 -- |These commands are not implemented, as of now. Library
 --  users can implement these or other commands from

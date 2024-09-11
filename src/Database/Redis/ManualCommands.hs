@@ -7,6 +7,7 @@ import Data.ByteString (ByteString, empty, append)
 import qualified Data.ByteString.Char8 as Char8
 import qualified Data.ByteString as BS
 import Data.Maybe (maybeToList, catMaybes)
+import Data.Either.Extra (mapLeft)
 #if __GLASGOW_HASKELL__ < 808
 import Data.Semigroup ((<>))
 #endif
@@ -1440,14 +1441,87 @@ fCall
     -> m (f a)
 fCall funcName keys args = sendRequest (["FCALL", funcName, encode (toInteger $ length keys)] ++ keys ++ args)
 
+fCallRo
+    :: (RedisCtx m f, RedisResult a)
+    => ByteString -- function name
+    -> [ByteString] -- list of keys
+    -> [ByteString] -- list of arguments
+    -> m (f a)
+fCallRo funcName keys args = sendRequest (["FCALL_RO", funcName, encode (toInteger $ length keys)] ++ keys ++ args)
+
 data FunctionLoadOpts = REPLACE | NO_REPLACE deriving (Show, Eq)
 
 functionLoad
     :: (RedisCtx m f)
     => ByteString
-    -> FunctionLoadOpts
-    -> m (f ByteString)
-functionLoad functionStr opt =
-  case opt of
-    REPLACE -> sendRequest (["FUNCTION", "LOAD", "REPLACE", functionStr])
-    NO_REPLACE -> sendRequest (["FUNCTION", "LOAD", functionStr])
+    -> Maybe FunctionLoadOpts
+    -> m [Either Reply ByteString]
+functionLoad functionStr opt = do
+    let optStr = case opt of
+            Just REPLACE -> ["REPLACE"]
+            _ -> []
+    sendToAllMasterNodes (["FUNCTION", "LOAD"] ++ optStr ++ [functionStr])
+
+functionDelete
+    :: (RedisCtx m f)
+    => ByteString
+    -> m [Either Reply Status]
+functionDelete libraryName = sendToAllMasterNodes (["FUNCTION", "DELETE", libraryName])
+
+data FunctionListOpts =
+  FunctionListOpts
+    { libraryNamePattern :: Maybe ByteString
+    , withCode :: Maybe Bool
+    } deriving (Show, Eq)
+
+data FunctionListResponse = FunctionListResponse
+    { functionListResponseEntries :: [FunctionListLibraryEntry]
+    } deriving (Show, Eq)
+
+decode' :: (RedisResult a) => Reply -> Reply -> Either Reply a
+decode' r = mapLeft (const r) . decode
+
+instance RedisResult FunctionListResponse where
+    decode (MultiBulk Nothing) = Right $ FunctionListResponse []
+    decode r@(MultiBulk (Just entries)) = do
+        decodeEntries <- mapM (decode' r) entries
+        pure $ FunctionListResponse decodeEntries
+    decode r = Left r
+
+data FunctionListLibraryEntry = FunctionListLibraryEntry
+    { libraryName :: ByteString
+    , engine :: ByteString
+    , functions :: [FunctionListFunctionEntry]
+    , sourceCode :: Maybe ByteString
+    } deriving (Show, Eq)
+
+instance RedisResult FunctionListLibraryEntry where
+    decode r@(MultiBulk (Just ((Bulk (Just "library_name")) : libraryName : (Bulk (Just "engine")) : engine : (Bulk (Just "functions")) : (MultiBulk (Just functions)) : xs))) = do
+        sourceCode <-
+            case xs of
+                [] -> Right Nothing
+                [Bulk (Just "library_code"), code] -> sequence (Just $ decode' r code)
+                _ -> Left r
+        FunctionListLibraryEntry <$> (decode' r libraryName) <*> (decode' r engine) <*> (mapM (decode' r) functions) <*> (pure sourceCode)
+    decode r = Left r
+
+data FunctionListFunctionEntry = FunctionListFunctionEntry
+    { functionName :: ByteString
+    , description :: Maybe ByteString
+    , flags :: [ByteString]
+    } deriving (Show, Eq)
+
+instance RedisResult FunctionListFunctionEntry where
+    decode r@(MultiBulk (Just [Bulk (Just "name"), functionName, Bulk (Just "description"), description, Bulk (Just "flags"), flags])) =
+        FunctionListFunctionEntry <$> (decode' r functionName) <*> (decode' r description) <*> (decode' r flags)
+    decode r = Left r
+
+functionList
+    :: (RedisCtx m f)
+    => FunctionListOpts
+    -> m (f FunctionListResponse)
+functionList FunctionListOpts{..} =
+    sendRequest $ concat [["FUNCTION", "LIST"], libPat, code]
+    where
+        libPat = maybe [] (\b -> ["LIBRARYNAME", b]) libraryNamePattern
+        code = maybe [] (\c -> if c then ["WITHCODE"] else []) withCode
