@@ -50,6 +50,7 @@ import Control.Monad.Extra (loopM)
 import Database.Redis.Protocol(Reply(Error), renderRequest, reply)
 import qualified Database.Redis.Cluster.Command as CMD
 import System.Timeout (timeout)
+import Control.Applicative((<|>))
 
 -- This module implements a clustered connection whilst maintaining
 -- compatibility with the original Hedis codebase. In particular it still
@@ -122,7 +123,7 @@ type NodeConnectionMap = HM.HashMap NodeID NodeConnection
 -- Object for storing connection Info which will be used when cluster is refreshed
 data ClusterConfig = ClusterConfig
     { 
-        requestTimeout  :: Maybe Int
+        requestTimeout  :: Int -- in microseconds
     } deriving Show
 
 newtype MissingNodeException = MissingNodeException [B.ByteString] deriving (Show, Typeable)
@@ -140,11 +141,11 @@ instance Exception NoNodeException
 data TimeoutException = TimeoutException String deriving (Show, Typeable)
 instance Exception TimeoutException
 
-createClusterConnectionPools :: (Host -> CC.PortID -> IO CC.ConnectionContext) -> Int -> Time.NominalDiffTime -> [CMD.CommandInfo] -> ShardMap -> IO Connection
-createClusterConnectionPools withAuth maxResources idleTime commandInfos shardMap  = do
+createClusterConnectionPools :: (Host -> CC.PortID -> IO CC.ConnectionContext) -> Int -> Time.NominalDiffTime -> [CMD.CommandInfo] -> ShardMap -> Maybe Double -> IO Connection
+createClusterConnectionPools withAuth maxResources idleTime commandInfos shardMap requestTimeoutSeconds = do
         nodeConns <- nodeConnections
         shardNodeVar <- newMVar (shardMap, nodeConns)
-        nodeRequestTimeout <- (>>= readMaybe) <$> lookupEnv "REDIS_REQUEST_NODE_TIMEOUT"
+        nodeRequestTimeout <- round . (\x -> (x :: Time.NominalDiffTime) * 1000000) . realToFrac . fromMaybe (5 :: Double) . (requestTimeoutSeconds <|> ). (>>= readMaybe) <$> lookupEnv "REDIS_REQUEST_NODE_TIMEOUT"
         let clusterConfig = ClusterConfig {
                     requestTimeout = nodeRequestTimeout
                 }
@@ -242,7 +243,7 @@ rawResponse (CompletedRequest _ _ r) = r
 -- acceptable in most cases as these errors should only occur in the case of
 -- cluster reconfiguration events, which should be rare.
 evaluatePipeline :: IO ShardMap -> Connection -> [[B.ByteString]] -> IO [Reply]
-evaluatePipeline refreshShardmapAction conn@(Connection shardNodeVar infoMap _) requests = do
+evaluatePipeline refreshShardmapAction conn@(Connection shardNodeVar infoMap (ClusterConfig reqTimeout)) requests = do
         (shardMap, nodesConn) <- hasLocked $ readMVar shardNodeVar
         erequestsByNode <- try $ getRequestsByNode shardMap nodesConn
         requestsByNode <- case erequestsByNode of
@@ -285,7 +286,7 @@ evaluatePipeline refreshShardmapAction conn@(Connection shardNodeVar infoMap _) 
         return $ (, [PendingRequest index request]) <$> nodeConns
     executeRequests :: NodeConnection -> [PendingRequest] -> IO [CompletedRequest]
     executeRequests nodeConn nodeRequests = do
-        replies <- requestNode nodeConn $ map rawRequest nodeRequests
+        replies <- requestNode reqTimeout nodeConn $ map rawRequest nodeRequests
         return $ zipWith (curry (\(PendingRequest i r, rep) -> CompletedRequest i r rep)) nodeRequests replies
     retry :: Int -> CompletedRequest -> IO CompletedRequest
     retry retryCount (CompletedRequest index request thisReply) = do
@@ -298,7 +299,7 @@ evaluatePipeline refreshShardmapAction conn@(Connection shardNodeVar infoMap _) 
 -- If multiple requests are passed in they're assumed to be a MULTI..EXEC
 -- transaction and will all be retried.
 retryBatch :: IO ShardMap -> Connection -> Int -> [[B.ByteString]] -> [Reply] -> IO [Reply]
-retryBatch refreshShardmapAction conn@(Connection _ infoMap _) retryCount requests replies =
+retryBatch refreshShardmapAction conn@(Connection _ infoMap (ClusterConfig reqTimeout)) retryCount requests replies =
     -- The last reply will be the `EXEC` reply containing the redirection, if
     -- there is one.
     case last replies of
@@ -306,11 +307,11 @@ retryBatch refreshShardmapAction conn@(Connection _ infoMap _) retryCount reques
             keys <- mconcat <$> mapM (requestKeys infoMap) requests
             hashSlot <- hashSlotForKeys (CrossSlotException requests) keys
             nodeConn <- nodeConnForHashSlot conn ("retryBatch" : head requests) hashSlot
-            requestNode nodeConn requests
+            requestNode reqTimeout nodeConn requests
         (askingRedirection -> Just (host, port)) -> do
             maybeAskNode <- nodeConnWithHostAndPort conn host port
             case maybeAskNode of
-                Just askNode -> tail <$> requestNode askNode (["ASKING"] : requests)
+                Just askNode -> tail <$> requestNode reqTimeout askNode (["ASKING"] : requests)
                 Nothing -> case retryCount of
                     0 -> do
                         _ <- hasLocked $ refreshShardmapAction
@@ -324,7 +325,7 @@ retryBatch refreshShardmapAction conn@(Connection _ infoMap _) retryCount reques
 evaluateTransactionPipeline :: IO ShardMap -> Connection -> [[B.ByteString]] -> IO [Reply]
 evaluateTransactionPipeline refreshShardmapAction conn requests' = do
     let requests = reverse requests'
-    let (Connection _ infoMap _) = conn
+    let (Connection _ infoMap (ClusterConfig reqTimeout)) = conn
     keys <- mconcat <$> mapM (requestKeys infoMap) requests
     -- In cluster mode Redis expects commands in transactions to all work on the
     -- same hashslot. We find that hashslot here.
@@ -338,7 +339,7 @@ evaluateTransactionPipeline refreshShardmapAction conn requests' = do
     nodeConn <- nodeConnForHashSlot conn ("evaluateTransactionPipeline" : head requests) hashSlot
     -- catch the exception thrown, send the command to random node.
     -- This change is required to handle the cluster topology change.
-    eresps <- try $ requestNode nodeConn requests
+    eresps <- try $ requestNode reqTimeout nodeConn requests
     resps <-
       case eresps of
         Right v -> return v
@@ -348,7 +349,7 @@ evaluateTransactionPipeline refreshShardmapAction conn requests' = do
                 Just (er :: TimeoutException) -> throwIO er
                 _ -> do
                     newNodeConn <- nodeConnForHashSlot conn ("TimeoutException in evaluateTransactionPipeline" : head requests) hashSlot
-                    requestNode newNodeConn requests
+                    requestNode reqTimeout newNodeConn requests
     -- The Redis documentation has the following to say on the effect of
     -- resharding on multi-key operations:
     --
@@ -379,18 +380,18 @@ evaluateTransactionPipeline refreshShardmapAction conn requests' = do
         heads:tails   -> if moved heads then do
                             void $ hasLocked $ refreshShardmapAction
                             newNodeConn <- nodeConnForHashSlot conn ("Error in evaluateTransactionPipeline moved retry" : head requests) hashSlot
-                            Right <$> requestNode newNodeConn requests
+                            Right <$> requestNode reqTimeout newNodeConn requests
                         else 
                             case askingRedirection heads of
                                 Just (host,port) -> do 
                                         void $ hasLocked $ refreshShardmapAction
                                         maybeAskNode <- nodeConnWithHostAndPort conn host port
                                         case maybeAskNode of
-                                            Just askNode -> Right . tail <$> requestNode askNode (["ASKING"] : requests)
+                                            Just askNode -> Right . tail <$> requestNode reqTimeout askNode (["ASKING"] : requests)
                                             Nothing -> do
                                                 void $ hasLocked $ refreshShardmapAction
                                                 newNodeConn <- nodeConnForHashSlot conn ("Error in evaluateTransactionPipeline ASK retry" : head requests) hashSlot
-                                                Right <$> requestNode newNodeConn requests
+                                                Right <$> requestNode reqTimeout newNodeConn requests
                                 Nothing -> return $ Left tails
         []          -> return $ Right resps) resps
 
@@ -473,10 +474,9 @@ allMasterNodes (ShardMap shardMap) nodeConns = do
   where
     onlyMasterNodes = (\(Shard master _) -> master) <$> nub (IntMap.elems shardMap)
 
-requestNode :: NodeConnection -> [[B.ByteString]] -> IO [Reply]
-requestNode (NodeConnection pool _) requests = withResource pool $ \(ctx, lastRecvRef) -> do
-    envTimeout <- round . (\x -> (x :: Time.NominalDiffTime) * 1000000) . realToFrac . fromMaybe (5 :: Double) . (>>= readMaybe) <$> lookupEnv "REDIS_REQUEST_NODE_TIMEOUT"
-    mayberesp <- timeout envTimeout $ requestNodeImpl ctx lastRecvRef
+requestNode :: Int -> NodeConnection -> [[B.ByteString]] -> IO [Reply]
+requestNode requestNodeTimeout (NodeConnection pool _) requests = withResource pool $ \(ctx, lastRecvRef) -> do
+    mayberesp <- timeout requestNodeTimeout $ requestNodeImpl ctx lastRecvRef
     case mayberesp of
       Just a    -> return a
       Nothing   -> putStrLn "timeout happened" *> throwIO (TimeoutException "Request Timeout")
@@ -523,9 +523,9 @@ hasLocked action =
 
 
 requestMasterNodes :: Connection -> [B.ByteString] -> IO [Reply]
-requestMasterNodes conn req = do
+requestMasterNodes conn@(Connection _ _ (ClusterConfig reqTimeout)) req = do
     masterNodeConns <- masterNodes conn
-    concat <$> mapM (`requestNode` [req]) masterNodeConns
+    concat <$> mapM (flip (requestNode reqTimeout) [req]) masterNodeConns
 
 masterNodes :: Connection -> IO [NodeConnection]
 masterNodes (Connection shardNodeVar _ _) = do

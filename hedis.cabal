@@ -92,7 +92,15 @@ library
                     network-uri,
                     unliftio-core,
                     random,
-                    extra
+                    extra,
+                    http-client,
+                    http-client-tls,
+                    http-types,
+                    aeson,
+                    jwt,
+                    cryptonite,
+                    containers,
+                    time
   if !impl(ghc >= 8.0)
     build-depends:
       semigroups >= 0.11 && < 0.19
@@ -111,6 +119,7 @@ library
                     Database.Redis.ManualCommands,
                     Database.Redis.URL,
                     Database.Redis.ConnectionContext
+                    Database.Redis.GcpAuthToken
   other-extensions: StrictData
 
 benchmark hedis-benchmark
