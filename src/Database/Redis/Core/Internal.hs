@@ -29,7 +29,7 @@ deriving instance MonadFail Redis
 data RedisEnv
     = NonClusteredEnv { envConn :: PP.Connection, nonClusteredLastReply :: IORef Reply }
     | ClusteredEnv
-        { refreshAction :: IO Cluster.ShardMap
+        { refreshAction :: Maybe Cluster.NodeConnection -> IO (Cluster.ShardMap,Cluster.NodeConnectionMap)
         , connection :: Cluster.Connection
         , clusteredLastReply :: IORef Reply
         , pipeline :: MVar Cluster.Pipeline

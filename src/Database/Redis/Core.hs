@@ -23,7 +23,7 @@ import Database.Redis.Core.Internal
 import Database.Redis.Protocol
 import qualified Database.Redis.ProtocolPipelining as PP
 import Database.Redis.Types
-import Database.Redis.Cluster(ShardMap)
+import Database.Redis.Cluster(ShardMap, NodeConnectionMap, NodeConnection)
 import qualified Database.Redis.Cluster as Cluster
 
 --------------------------------------------------------------------------------
@@ -73,7 +73,7 @@ runRedisInternal conn (Redis redis) = do
   readIORef ref >>= (`seq` return ())
   return r
 
-runRedisClusteredInternal :: Cluster.Connection -> IO ShardMap -> Redis a -> IO a
+runRedisClusteredInternal :: Cluster.Connection -> (Maybe NodeConnection -> IO (ShardMap, NodeConnectionMap)) -> Redis a -> IO a
 runRedisClusteredInternal connection refreshShardmapAction (Redis redis) = do
     ref <- newIORef (SingleLine "nobody will ever see this")
     stateVar <- liftIO $ newMVar $ Cluster.Pending []

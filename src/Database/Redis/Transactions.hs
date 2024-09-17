@@ -4,7 +4,7 @@
 
 module Database.Redis.Transactions (
     watch, unwatch, multiExec,
-    Queued(), TxResult(..), RedisTx(),
+    Queued(..), TxResult(..), RedisTx(),
 ) where
 
 #if __GLASGOW_HASKELL__ < 710
