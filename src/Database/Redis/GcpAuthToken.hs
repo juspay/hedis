@@ -4,7 +4,7 @@
 module Database.Redis.GcpAuthToken where
 
 import Control.Exception as CE
-import Control.Monad(forever)
+import Control.Monad(forever, join)
 import System.Environment (lookupEnv)
 import Data.Maybe (fromMaybe)
 import Text.Read (readMaybe)
@@ -34,6 +34,19 @@ instance Show ShowableIORefText where
 data MaybeException = MaybeException String deriving (Show)
 
 instance Exception MaybeException
+
+stripLensPrefixOptions :: Options
+stripLensPrefixOptions = defaultOptions { fieldLabelModifier = drop 1 }
+
+data GoogleOAuthAccessTokenRequest =
+  GoogleOAuthAccessTokenRequest
+    { _grant_type :: Text
+    , _assertion :: Text
+    }
+    deriving (Show, Eq, Ord, Generic)
+
+instance ToJSON GoogleOAuthAccessTokenRequest where
+  toJSON = genericToJSON $ stripLensPrefixOptions {omitNothingFields = True}
 
 data GoogleOAuthAccessTokenResponse =
   GoogleOAuthAccessTokenSuccessResponse
@@ -82,14 +95,9 @@ getGoogleOAuthJOSEHeader typ alg =
 getPOSIXSecondsTimestamp :: IO Int
 getPOSIXSecondsTimestamp = floor . DT.utcTimeToPOSIXSeconds <$> DT.getCurrentTime
 
-getGoogleOAuthJWTClaimsSet :: IO JWT.JWTClaimsSet
-getGoogleOAuthJWTClaimsSet = do
+getGoogleOAuthJWTClaimsSet :: Int -> Text -> Text -> Text -> Text -> IO JWT.JWTClaimsSet
+getGoogleOAuthJWTClaimsSet tokenExpiry issuer subject audience scope = do
   currentTimestamp <- getPOSIXSecondsTimestamp
-  tokenExpiry <- fromMaybe 45 . (>>= readMaybe) <$> lookupEnv "GOOGLE_OAUTH_TOKEN_EXPIRY"
-  issuer <- T.pack . fromMaybe "upi-callbacks@jp-dev-chaos.iam.gserviceaccount.com"  <$> lookupEnv "GOOGLE_OAUTH_ISSUER"
-  subject <- T.pack . fromMaybe "upi-callbacks@jp-dev-chaos.iam.gserviceaccount.com" <$> lookupEnv "GOOGLE_OAUTH_SUBJECT"
-  audience <- T.pack . fromMaybe "https://oauth2.googleapis.com/token" <$> lookupEnv "GOOGLE_OAUTH_AUDIENCE"
-  scope <- T.pack . fromMaybe "https://www.googleapis.com/auth/nbupayments" <$> lookupEnv "GOOGLE_OAUTH_SCOPE"
   let iat = fromInteger (toInteger currentTimestamp)
       exp' = fromInteger (toInteger (currentTimestamp + tokenExpiry * 60))
   return
@@ -104,51 +112,63 @@ getGoogleOAuthJWTClaimsSet = do
       , JWT.unregisteredClaims = JWT.ClaimsMap $ DMS.singleton "scope" (A.String $ scope)
       }
 
-getGoogleOAuthSigner :: IO (Maybe JWT.Signer)
-getGoogleOAuthSigner = fmap JWT.RSAPrivateKey <$> getGoogleOAuthPrivateKey
+getGoogleOAuthSigner :: String -> IO (Maybe JWT.Signer)
+getGoogleOAuthSigner filePath= fmap JWT.RSAPrivateKey <$> getGoogleOAuthPrivateKey filePath
 
-getGoogleOAuthPrivateKey :: IO (Maybe RSAT.PrivateKey)
-getGoogleOAuthPrivateKey = do
-  filePath <- fromMaybe "/Users/piyush.choudhary/repos/haskull/helloworld/gpay-oauth-d.txt"  <$> lookupEnv "GOOGLE_OAUTH_PRIVATE_KEY"
+getGoogleOAuthPrivateKey :: String -> IO (Maybe RSAT.PrivateKey)
+getGoogleOAuthPrivateKey filePath = do
   let fileData = T.readFile filePath
       key = T.encodeUtf8 . T.replace (T.pack "\\n") (T.pack "\n") <$> fileData
   JWT.readRsaSecret <$> key
 
-createGoogleOAuthATReq :: IO A.Value
-createGoogleOAuthATReq = do
+createGoogleOAuthATReq :: Int -> Text -> Text -> Text -> Text -> String -> Text -> IO A.Value
+createGoogleOAuthATReq tokenExpiry issuer subject audience scope filePath grantType = do
     let header = getGoogleOAuthJOSEHeader "JWT" JWT.RS256
-    googleOAuthSigner <- getGoogleOAuthSigner
+    googleOAuthSigner <- getGoogleOAuthSigner filePath
     key <- fromJustErr "getGoogleOAuthSignedJWT-key" googleOAuthSigner
-    jwt <- JWT.encodeSigned key header <$> getGoogleOAuthJWTClaimsSet
-    grantType <- T.pack . fromMaybe "urn:ietf:params:oauth:grant-type:jwt-bearer" <$> lookupEnv "GOOGLE_OAUTH_GRANT_TYPE"
-    let googleOAuthATReq = A.object ["grant_type" A..= (grantType :: Text), "assertion" A..= jwt]
-    return googleOAuthATReq
+    jwt <- JWT.encodeSigned key header <$> getGoogleOAuthJWTClaimsSet tokenExpiry issuer subject audience scope
+    let googleOAuthATReq = 
+          GoogleOAuthAccessTokenRequest
+            { _grant_type = grantType
+            , _assertion = jwt
+            }
+    return (toJSON googleOAuthATReq)
 
-callFetchTokenAPI :: Manager -> IO Text
-callFetchTokenAPI manager = do
-    -- putStrLn "inside callFetchTokenAPI"
-    req <- createGoogleOAuthATReq
-    googleOAuthTokenUrl <- fromMaybe "https://oauth2.googleapis.com/token" <$> lookupEnv "GOOGLE_OAUTH_TOKEN_URL"
+callFetchTokenAPI :: Manager -> Int -> Text -> Text -> Text -> Text -> String -> Text -> String -> IO Text
+callFetchTokenAPI manager tokenExpiry issuer subject audience scope filePath grantType googleOAuthTokenUrl = do
+    req <- createGoogleOAuthATReq tokenExpiry issuer subject audience scope filePath grantType
     initialRequest <- parseRequest googleOAuthTokenUrl
     let googleOAuthATReq = initialRequest { method = "POST", requestBody = RequestBodyLBS $ A.encode req , requestHeaders = [(hContentType, "application/json")]}
     responseOauth <- httpLbs googleOAuthATReq manager
-    -- putStrLn $ "The status code was: " ++ (show $ statusCode $ responseStatus responseOauth)
-    putStrLn $ show $ responseBody responseOauth
     let resBody =  A.eitherDecode (responseBody responseOauth) :: Either String GoogleOAuthAccessTokenResponse
     case resBody of
         Left err -> throwIO (GoogleOAuthException err)
         Right (GoogleOAuthAccessTokenSuccessResponse accessToken _ _ _) -> return accessToken
         Right (GoogleOAuthAccessTokenFailureResponse err _) -> throwIO (GoogleOAuthException $ unpack err)
 
-callAPIWithExceptionHandling :: Manager -> IO (Either SomeException Text)
-callAPIWithExceptionHandling manager = try $ callFetchTokenAPI manager
+callAPIWithExceptionHandling :: Manager -> Int -> Text -> Text -> Text -> Text -> String -> Text -> String -> IO (Either SomeException Text)
+callAPIWithExceptionHandling  manager tokenExpiry issuer subject audience scope filePath grantType googleOAuthTokenUrl = 
+  try $ callFetchTokenAPI manager tokenExpiry issuer subject audience scope filePath grantType googleOAuthTokenUrl
 
 fetchAndUpdateRedisAuthToken :: IORef Text -> Manager -> IO ()
 fetchAndUpdateRedisAuthToken ref manager = do
     authTokenFetchInterval <- fromMaybe 500000 . (>>= readMaybe) <$> lookupEnv "AUTHTOKEN_FETCH_INTERVAL"
+    (tokenExpiry, issuer, subject, audience, scope, filePath, grantType, googleOAuthTokenUrl) <- getGoogleOauthConfigs
     forever $ do
-        authToken <- callAPIWithExceptionHandling manager
+        authToken <- callAPIWithExceptionHandling manager tokenExpiry issuer subject audience scope filePath grantType googleOAuthTokenUrl
         case authToken of
             Right authToken' -> writeIORef ref authToken'
             Left ex -> putStrLn $ "Caught exception in fetchAndUpdateRedisAuthToken: " ++ show ex
         threadDelay authTokenFetchInterval
+
+getGoogleOauthConfigs :: IO (Int, Text, Text, Text, Text, String, Text, String)
+getGoogleOauthConfigs = do
+  tokenExpiry <- fromMaybe 45 . (>>= readMaybe) <$> lookupEnv "GOOGLE_OAUTH_TOKEN_EXPIRY"
+  issuer <- T.pack . fromMaybe "upi-callbacks@jp-dev-chaos.iam.gserviceaccount.com"  <$> lookupEnv "GOOGLE_OAUTH_ISSUER"
+  subject <- T.pack . fromMaybe "upi-callbacks@jp-dev-chaos.iam.gserviceaccount.com" <$> lookupEnv "GOOGLE_OAUTH_SUBJECT"
+  audience <- T.pack . fromMaybe "https://oauth2.googleapis.com/token" <$> lookupEnv "GOOGLE_OAUTH_AUDIENCE"
+  scope <- T.pack . fromMaybe "https://www.googleapis.com/auth/nbupayments" <$> lookupEnv "GOOGLE_OAUTH_SCOPE"
+  filePath <- join $ fromJustErr "Env GOOGLE_OAUTH_PRIVATE_KEY is not set though dynamic auth is required"  <$> (lookupEnv "GOOGLE_OAUTH_PRIVATE_KEY")
+  grantType <- T.pack . fromMaybe "urn:ietf:params:oauth:grant-type:jwt-bearer" <$> lookupEnv "GOOGLE_OAUTH_GRANT_TYPE"
+  googleOAuthTokenUrl <- fromMaybe "https://oauth2.googleapis.com/token" <$> lookupEnv "GOOGLE_OAUTH_TOKEN_URL"
+  return (tokenExpiry, issuer, subject, audience, scope, filePath, grantType, googleOAuthTokenUrl)

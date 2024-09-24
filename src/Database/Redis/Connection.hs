@@ -50,7 +50,7 @@ import Database.Redis.Commands
     , ClusterSlotsResponse(..)
     , ClusterSlotsResponseEntry(..)
     , ClusterSlotsNode(..))
-import Database.Redis.GcpAuthToken(ShowableIORefText(..), fetchAndUpdateRedisAuthToken, callFetchTokenAPI)
+import Database.Redis.GcpAuthToken(ShowableIORefText(..), fetchAndUpdateRedisAuthToken, callFetchTokenAPI, getGoogleOauthConfigs)
 
 --------------------------------------------------------------------------------
 -- Connection
@@ -166,12 +166,7 @@ createConnection ConnInfo{..} = do
                Nothing -> return conn
                Just tlsParams -> PP.enableTLS tlsParams conn
     PP.beginReceiving conn'
-    connectAuth' <- 
-        case maybeAuthTokenRef of
-            Just (ShowableIORefText authTokenRef) -> do
-                authToken <- readIORef authTokenRef
-                return $ Just $ T.encodeUtf8 authToken
-            _ -> return connectAuth
+    connectAuth' <- getConnectionAuth connectAuth maybeAuthTokenRef
     putStrLn $ "createConnection: redis pass is" <> show connectAuth'
 
     runRedisInternal conn' $ do
@@ -198,15 +193,7 @@ connect :: ConnectInfo -> IO Connection
 connect cInfo@ConnInfo{..} = do
     putStrLn "NonClusteredConnection"
     -- putStrLn $ show cInfo
-    newConnInfo <-
-        case isDynamicAuthRequired of
-            Just True -> do
-                manager <- newManager tlsManagerSettings
-                authToken <- callFetchTokenAPI manager 
-                ref <- newIORef authToken
-                _ <- forkIO $ fetchAndUpdateRedisAuthToken ref manager
-                return cInfo {maybeAuthTokenRef = Just (ShowableIORefText ref)}
-            _ -> return cInfo
+    newConnInfo <- getNewConnectionInfo cInfo
     NonClusteredConnection <$> createPool (createConnection newConnInfo) PP.disconnect 1 connectMaxIdleTime connectMaxConnections
 
 -- |Constructs a 'Connection' pool to a Redis server designated by the
@@ -258,23 +245,14 @@ instance Exception ClusterConnectError
 -- - MOVE, SELECT
 -- - PUBLISH, SUBSCRIBE, PSUBSCRIBE, UNSUBSCRIBE, PUNSUBSCRIBE, RESET
 connectCluster :: ConnectInfo -> IO Connection
-connectCluster bootstrapConnInfo@ConnInfo{connectMaxConnections,connectMaxIdleTime,isDynamicAuthRequired,requestTimeout} = do
+connectCluster bootstrapConnInfo@ConnInfo{connectMaxConnections,connectMaxIdleTime,requestTimeout} = do
     putStrLn "ClusteredConnection"
-    newConnInfo <-
-        case isDynamicAuthRequired of
-            Just True -> do
-                manager <- newManager tlsManagerSettings
-                authToken <- callFetchTokenAPI manager 
-                ref <- newIORef authToken
-                _ <- forkIO $ fetchAndUpdateRedisAuthToken ref manager
-                return bootstrapConnInfo {maybeAuthTokenRef = Just (ShowableIORefText ref)}
-            _ -> return bootstrapConnInfo
+    newConnInfo <- getNewConnectionInfo bootstrapConnInfo
     conn <- createConnection newConnInfo
     slotsResponse <- runRedisInternal conn clusterSlots
     shardMap <- case slotsResponse of
         Left e -> throwIO $ ClusterConnectError e
-        Right slots -> do
-            shardMapFromClusterSlotsResponse slots
+        Right slots -> shardMapFromClusterSlotsResponse slots
     commandInfos <- runRedisInternal conn command
     case commandInfos of
         Left e -> throwIO $ ClusterConnectError e
@@ -290,12 +268,7 @@ connectWithAuth ConnInfo{connectTLSParams,connectAuth,connectReadOnly,connectTim
                 Nothing -> return conn
                 Just tlsParams -> PP.enableTLS tlsParams conn
     PP.beginReceiving conn'
-    connectAuth' <- 
-        case maybeAuthTokenRef of
-            Just (ShowableIORefText authTokenRef) -> do
-                authToken <- readIORef authTokenRef
-                return $ Just $ T.encodeUtf8 authToken
-            _ -> return connectAuth
+    connectAuth' <- getConnectionAuth connectAuth maybeAuthTokenRef
     putStrLn $ "connectWithAuth: redis pass is" <> show connectAuth'
     runRedisInternal conn' $ do
         -- AUTH
@@ -396,7 +369,8 @@ retryAuthIfDynamicAuthIsEnabled isDynamicAuthRequired maybeAuthTokenRef r = do
         (Just True, Just (ShowableIORefText authTokenRef)) -> do
             liftIO $ putStrLn "Wrong auth passed to redis, retrying.. "
             manager <- liftIO $ newManager tlsManagerSettings
-            authToken <- liftIO $ callFetchTokenAPI manager 
+            (tokenExpiry, issuer, subject, audience, scope, filePath, grantType, googleOAuthTokenUrl) <- liftIO $ getGoogleOauthConfigs
+            authToken <- liftIO $ callFetchTokenAPI manager tokenExpiry issuer subject audience scope filePath grantType googleOAuthTokenUrl
             resp <- auth $ T.encodeUtf8 authToken
             case resp of
                 Left reply -> liftIO $ throwIO $ ConnectAuthError reply
@@ -404,3 +378,27 @@ retryAuthIfDynamicAuthIsEnabled isDynamicAuthRequired maybeAuthTokenRef r = do
                     liftIO $ writeIORef authTokenRef authToken
                     return ()
         _ -> liftIO $ throwIO $ ConnectAuthError r
+
+-- If dynamic auth is enabled then this function return the auth from fetchTokenApi
+-- And fork a thread to update the auth token in background
+getNewConnectionInfo :: ConnectInfo -> IO ConnectInfo
+getNewConnectionInfo bootstrapConnInfo@ConnInfo{isDynamicAuthRequired} = 
+    case isDynamicAuthRequired of
+        Just True -> do
+            manager <- newManager tlsManagerSettings
+            (tokenExpiry, issuer, subject, audience, scope, filePath, grantType, googleOAuthTokenUrl) <- liftIO $ getGoogleOauthConfigs
+            authToken <- callFetchTokenAPI manager tokenExpiry issuer subject audience scope filePath grantType googleOAuthTokenUrl
+            ref <- newIORef authToken
+            _ <- forkIO $ fetchAndUpdateRedisAuthToken ref manager
+            return bootstrapConnInfo {maybeAuthTokenRef = Just (ShowableIORefText ref)}
+        _ -> return bootstrapConnInfo
+
+-- If dynamic auth is enabled then this function read the auth string from IORef where a background thread
+-- is updating the IORef on regular interval
+getConnectionAuth :: Maybe B.ByteString -> Maybe ShowableIORefText -> IO (Maybe B.ByteString)
+getConnectionAuth connectAuth maybeAuthTokenRef = 
+    case maybeAuthTokenRef of
+            Just (ShowableIORefText authTokenRef) -> do
+                authToken <- readIORef authTokenRef
+                return $ Just $ T.encodeUtf8 authToken
+            _ -> return connectAuth
