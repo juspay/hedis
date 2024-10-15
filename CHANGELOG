@@ -1,5 +1,8 @@
 # Changelog for Hedis
 
+## 0.15.4
+*PR #55. Added Read and Generic instances for XReadResponse and StreamsRecord
+
 ## 0.15.3
 * PR #27. Increased the default timeout for cluster connect, request node, and refresh Shard Map
 
