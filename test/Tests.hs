@@ -820,3 +820,20 @@ testFunctionDelete :: Test
 testFunctionDelete = testCase "functionDelete" $ do
     res <- functionDelete "hedis_test"
     (pure res) >>=?! replicate (length res) Ok
+
+testsGeoSet :: Test
+testsGeoSet = testCase "geoadd and geosearch operations" $ do
+    geoadd "geoKey" [(13.361389, 38.115556, "Palermo"), (15.087269, 37.502669, "Catania")] >>=? 2 
+    geoadd "geoKey" [(15.554016, 38.193817, "Messina")] >>=? 1  
+
+    geosearch "geoKey" (FromMember "Palermo") (ByRadius 200 "km")  >>=? ["Palermo","Catania","Messina"]
+    let opts = GeoSearchOpts
+            { order = Just ASC
+            , count = Just (CountOption 1 False)
+            , withCoord = False
+            , withDist = False
+            , withHash = False
+            }
+
+    geosearchWithOpts "geoKey" (FromMember "Palermo") (ByRadius 200 "km") opts >>=? ["Palermo"]
+    del ["geoKey"] >>=? 1

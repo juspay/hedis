@@ -602,6 +602,130 @@ zaddOpts key scoreMembers ZaddOpts{..} =
     increment = ["INCR" | zaddIncrement]
 
 
+data GeoAddOpts = GeoAddOpts
+  { geoAddCondition :: Maybe Condition  -- ^ NX or XX options
+  , geoAddChange    :: Bool             -- ^ CH option
+  } deriving (Show, Eq)
+
+
+defaultGeoAddOpts :: GeoAddOpts
+defaultGeoAddOpts = GeoAddOpts
+  { geoAddCondition = Nothing
+  , geoAddChange    = False
+  }
+
+
+geoadd
+    :: (RedisCtx m f)
+    => ByteString                     -- ^ Key
+    -> [(Double, Double, ByteString)] -- ^ List of (longitude, latitude, member) tuples
+    -> m (f Integer)                  -- ^ Number of elements added to the sorted set
+geoadd key members = geoaddOpts key members defaultGeoAddOpts
+
+-- | GeoAdd with options
+geoaddOpts
+    :: (RedisCtx m f)
+    => ByteString                     -- ^ Key
+    -> [(Double, Double, ByteString)] -- ^ List of (longitude, latitude, member) tuples
+    -> GeoAddOpts                    -- ^ Options
+    -> m (f Integer)                  -- ^ Number of elements added to the sorted set
+geoaddOpts key members GeoAddOpts{..} =
+    sendRequest $ concat [["GEOADD", key], condition, change] ++ concatMap encodeMember members
+  where
+    encodeMember (lon, lat, member) = [encode lon, encode lat, member]
+    condition = map encode $ maybeToList geoAddCondition
+    change =  ["CH" | geoAddChange]
+
+
+geosearch 
+    :: (RedisCtx m f) 
+    => ByteString  -- ^ Key where the geo set is stored.
+    -> GeoFrom     -- ^ Search origin: either a member or coordinates.
+    -> GeoBy       -- ^ Search shape: radius or bounding box.
+    -> m (f [ByteString])  -- ^ Search results.
+geosearch key from by = geosearchWithOpts key from by defaultGeoSearchOpts
+
+-- | GeoSearch with options.
+geosearchWithOpts 
+    :: (RedisCtx m f) 
+    => ByteString  -- ^ Key where the geo set is stored.
+    -> GeoFrom     -- ^ Search origin: either a member or coordinates.
+    -> GeoBy       -- ^ Search shape: radius or bounding box.
+    -> GeoSearchOpts -- ^ Options
+    -> m (f [ByteString])  -- ^ Search results.
+geosearchWithOpts key from by GeoSearchOpts{..} =
+    sendRequest $ concat 
+        [ ["GEOSEARCH", key]
+        , encodeArgs from
+        , encodeArgs by
+        , maybe [] encodeArgs order
+        , maybe [] encodeArgs count
+        , ["WITHCOORD" | withCoord]
+        , ["WITHDIST" | withDist]
+        , ["WITHHASH" | withHash]
+        ]
+data GeoSearchOpts = GeoSearchOpts
+    { order      :: Maybe OrderOption       -- ^ Order of the results: ASC or DESC
+    , count      :: Maybe CountOption       -- ^ Count option for the number of results
+    , withCoord  :: Bool                    -- ^ Include coordinates in the results
+    , withDist   :: Bool                    -- ^ Include distances in the results
+    , withHash   :: Bool                    -- ^ Include hashes in the results
+    }
+
+-- | order option for GeoSearch.
+data OrderOption
+    = ASC  -- ^ Ascending order
+    | DESC -- ^ Descending order
+
+-- | count option for GeoSearch.
+data CountOption = CountOption
+    { countValue :: Integer  -- ^ Number of results to return
+    , anyFlag    :: Bool     -- ^ Whether to use the ANY option
+    }
+
+defaultGeoSearchOpts :: GeoSearchOpts
+defaultGeoSearchOpts = GeoSearchOpts
+    { order = Nothing
+    , count = Nothing
+    , withCoord = False
+    , withDist = False
+    , withHash = False
+    }
+
+
+-- | 'FROM' clause of GEOSEARCH.
+data GeoFrom
+    = FromMember ByteString            -- ^ Search from a member's location.
+    | FromLonLat Double Double         -- ^ Search from specific coordinates.
+
+-- | shape of the GEOSEARCH (radius or box).
+data GeoBy
+    = ByRadius Double ByteString       -- ^ Search within a radius (e.g., "km").
+    | ByBox Double Double ByteString   -- ^ Search within a bounding box.
+
+class EncodeArgs a where
+    encodeArgs :: a -> [ByteString]  -- Each argument fragment as [ByteString]
+
+instance EncodeArgs GeoFrom where
+    encodeArgs (FromMember member) = ["FROMMEMBER", member]
+    encodeArgs (FromLonLat lon lat) = ["FROMLONLAT", encode lon, encode lat]
+
+instance EncodeArgs GeoBy where
+    encodeArgs (ByRadius radius unit) = ["BYRADIUS", encode radius, unit]
+    encodeArgs (ByBox width height unit) = ["BYBOX", encode width, encode height , unit]
+
+instance EncodeArgs OrderOption where
+    encodeArgs ASC  = ["ASC"]
+    encodeArgs DESC = ["DESC"]
+
+instance EncodeArgs CountOption where
+    encodeArgs (CountOption n anyFlag) =
+        if anyFlag
+        then ["COUNT", encode n, "ANY"]
+        else ["COUNT", encode n]
+
+
+
 data ReplyMode = On | Off | Skip deriving (Show, Eq)
 
 
