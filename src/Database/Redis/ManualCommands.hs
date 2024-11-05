@@ -659,14 +659,14 @@ geosearchWithOpts key from by GeoSearchOpts{..} =
         , encodeArgs from
         , encodeArgs by
         , maybe [] encodeArgs order
-        , maybe [] encodeArgs count
+        , maybe [] encodeArgs fetchCount
         , ["WITHCOORD" | withCoord]
         , ["WITHDIST" | withDist]
         , ["WITHHASH" | withHash]
         ]
 data GeoSearchOpts = GeoSearchOpts
     { order      :: Maybe OrderOption       -- ^ Order of the results: ASC or DESC
-    , count      :: Maybe CountOption       -- ^ Count option for the number of results
+    , fetchCount :: Maybe CountOption       -- ^ Count option for the number of results
     , withCoord  :: Bool                    -- ^ Include coordinates in the results
     , withDist   :: Bool                    -- ^ Include distances in the results
     , withHash   :: Bool                    -- ^ Include hashes in the results
@@ -686,7 +686,7 @@ data CountOption = CountOption
 defaultGeoSearchOpts :: GeoSearchOpts
 defaultGeoSearchOpts = GeoSearchOpts
     { order = Nothing
-    , count = Nothing
+    , fetchCount = Nothing
     , withCoord = False
     , withDist = False
     , withHash = False
