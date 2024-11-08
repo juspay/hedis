@@ -654,7 +654,7 @@ geosearchWithOpts
     -> GeoSearchOpts -- ^ Options
     -> m (f [(ByteString, ByteString)])  -- ^ Search results.
 geosearchWithOpts key from by GeoSearchOpts{..} =
-    sendRequest $ concat 
+    sendRequestForGeo $ concat 
         [ ["GEOSEARCH", key]
         , encodeArgs from
         , encodeArgs by

@@ -5,7 +5,7 @@
 module Database.Redis.Core (
     Redis(), unRedis, reRedis,
     RedisCtx(..), MonadRedis(..),
-    send, recv, sendRequest, sendToAllMasterNodes,
+    send, recv, sendRequest,sendRequestForGeo, sendToAllMasterNodes,
     runRedisInternal,
     runRedisClusteredInternal,
     RedisEnv(..),
@@ -112,6 +112,23 @@ send req = liftRedis $ Redis $ do
 sendRequest :: (RedisCtx m f, RedisResult a, MonadIO m)
     => [B.ByteString] -> m (f a)
 sendRequest req = do
+    r' <- liftRedis $ Redis $ do
+        env <- ask
+        case env of
+            NonClusteredEnv{..} -> do
+                r <- liftIO $ PP.request envConn (renderRequest req)
+                setLastReply r
+                return r
+            ClusteredEnv{..} -> do
+                r <- liftIO $ Cluster.requestPipelined refreshAction connection req pipeline
+                lift (writeIORef clusteredLastReply r)
+                return r
+    liftIO $ putStrLn $ "Decoded response: " ++ show r'
+    returnDecode r'
+
+sendRequestForGeo :: (RedisCtx m f, RedisResult a, MonadIO m)
+    => [B.ByteString] -> m (f a)
+sendRequestForGeo req = do
     r' <- liftRedis $ Redis $ do
         env <- ask
         case env of
