@@ -5,7 +5,7 @@
 module Database.Redis.Core (
     Redis(), unRedis, reRedis,
     RedisCtx(..), MonadRedis(..),
-    send, recv, sendRequest, sendToAllMasterNodes,
+    send, recv, sendRequest,sendRequestForGeo, sendToAllMasterNodes,
     runRedisInternal,
     runRedisClusteredInternal,
     RedisEnv(..),
@@ -35,10 +35,10 @@ import qualified Database.Redis.Cluster as Cluster
 --
 --  Please refer to the Command Type Signatures section of this page for more
 --  information.
-class (MonadRedis m) => RedisCtx m f | m -> f where
+class (MonadRedis m,MonadIO m) => RedisCtx m f | m -> f where
     returnDecode :: RedisResult a => Reply -> m (f a)
 
-class (Monad m) => MonadRedis m where
+class (Monad m, MonadIO m) => MonadRedis m where
     liftRedis :: Redis a -> m a
 
 
@@ -109,7 +109,7 @@ send req = liftRedis $ Redis $ do
 -- debugObject key = 'sendRequest' [\"DEBUG\", \"OBJECT\", key]
 -- @
 --
-sendRequest :: (RedisCtx m f, RedisResult a)
+sendRequest :: (RedisCtx m f, RedisResult a, MonadIO m)
     => [B.ByteString] -> m (f a)
 sendRequest req = do
     r' <- liftRedis $ Redis $ do
@@ -123,6 +123,23 @@ sendRequest req = do
                 r <- liftIO $ Cluster.requestPipelined refreshAction connection req pipeline
                 lift (writeIORef clusteredLastReply r)
                 return r
+    returnDecode r'
+
+sendRequestForGeo :: (RedisCtx m f, RedisResult a, MonadIO m)
+    => [B.ByteString] -> m (f a)
+sendRequestForGeo req = do
+    r' <- liftRedis $ Redis $ do
+        env <- ask
+        case env of
+            NonClusteredEnv{..} -> do
+                r <- liftIO $ PP.request envConn (renderRequest req)
+                setLastReply r
+                return r
+            ClusteredEnv{..} -> do
+                r <- liftIO $ Cluster.requestPipelined refreshAction connection req pipeline
+                lift (writeIORef clusteredLastReply r)
+                return r
+    liftIO $ putStrLn $ "Decoded response: " ++ show r'
     returnDecode r'
 
 sendToAllMasterNodes :: (RedisResult a, MonadRedis m) => [B.ByteString] -> m [Either Reply a]
