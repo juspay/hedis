@@ -642,7 +642,7 @@ geosearch
     => ByteString  -- ^ Key where the geo set is stored.
     -> GeoFrom     -- ^ Search origin: either a member or coordinates.
     -> GeoBy       -- ^ Search shape: radius or bounding box.
-    -> m (f [ByteString])  -- ^ Search results.
+    -> m (f [(ByteString, ByteString)])  -- ^ Search results.
 geosearch key from by = geosearchWithOpts key from by defaultGeoSearchOpts
 
 -- | GeoSearch with options.
@@ -652,7 +652,7 @@ geosearchWithOpts
     -> GeoFrom     -- ^ Search origin: either a member or coordinates.
     -> GeoBy       -- ^ Search shape: radius or bounding box.
     -> GeoSearchOpts -- ^ Options
-    -> m (f [ByteString])  -- ^ Search results.
+    -> m (f [(ByteString, ByteString)])  -- ^ Search results.
 geosearchWithOpts key from by GeoSearchOpts{..} =
     sendRequest $ concat 
         [ ["GEOSEARCH", key]
