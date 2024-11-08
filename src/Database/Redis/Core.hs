@@ -123,7 +123,6 @@ sendRequest req = do
                 r <- liftIO $ Cluster.requestPipelined refreshAction connection req pipeline
                 lift (writeIORef clusteredLastReply r)
                 return r
-    liftIO $ putStrLn $ "Decoded response: " ++ show r'
     returnDecode r'
 
 sendRequestForGeo :: (RedisCtx m f, RedisResult a, MonadIO m)
