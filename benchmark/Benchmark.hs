@@ -1,4 +1,4 @@
-{-# LANGUAGE OverloadedStrings, LambdaCase #-}
+{-# LANGUAGE OverloadedStrings, LambdaCase, TemplateHaskell, ScopedTypeVariables #-}
 
 module Main where
 
@@ -8,11 +8,16 @@ import Control.Monad.Trans
 import Data.Time
 import Database.Redis
 import Text.Printf
+import qualified Data.ByteString.Char8 as BS
 import qualified ClusterBenchmark as CB
+import Data.FileEmbed (embedFile)
 
 nRequests, nClients :: Int
 nRequests = 100000
 nClients  = 50
+
+fCallLib :: BS.ByteString
+fCallLib = $(embedFile "test/fcall_test.lua")
 
 main :: IO ()
 main = do
@@ -28,7 +33,10 @@ main = do
           _ -> return ()
     
         return ()
-    
+    fLoadRes <- runRedis conn $ functionLoad fCallLib REPLACE
+    case fLoadRes of
+        Left err -> error $ "functionLoad err :" ++ (show err)
+        _ -> return ()
     ----------------------------------------------------------------------
     -- Spawn clients
     --
@@ -109,6 +117,20 @@ main = do
           TxSuccess 1000 -> return ()
           _ -> error "error"
         return ()
+    
+    timeAction "multiExec set 2" 1 $ do
+        res <- multiExec $ do
+            _ <- set "foo" "bar"
+            set "foo2" "bar"
+        case res of
+            TxSuccess _ -> return ()
+            _ -> error "error"
+    
+    timeAction "fcall set_operations 2" 1 $ do
+        res <- fCall "set_operations" ["foo", "foo2"] ["2", "bar", "bar"]
+        case res of
+            Right ("OK" :: BS.ByteString) -> return ()
+            _ -> error "error"
     
     putStrLn "-------Redis Cluster Benchmark-------"
     CB.clusterBenchMark

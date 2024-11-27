@@ -154,6 +154,20 @@ sscanOpts, -- |Incrementally iterate Set elements (<http://redis.io/commands/ssc
 sunion, -- |Add multiple sets (<http://redis.io/commands/sunion>). Since Redis 1.0.0
 sunionstore, -- |Add multiple sets and store the resulting set in a key (<http://redis.io/commands/sunionstore>). Since Redis 1.0.0
 
+-- ** Geo Commands
+GeoAddOpts(..),
+defaultGeoAddOpts,
+geoadd,
+geoaddOpts,
+GeoFrom(FromMember,FromLonLat),
+GeoBy(ByRadius,ByBox),
+GeoSearchOpts(..),
+OrderOption(..),
+CountOption(..),
+defaultGeoSearchOpts,
+geosearch,
+geosearchWithOpts,
+
 -- ** Sorted Sets
 ZaddOpts(..),
 defaultZaddOpts,
@@ -275,7 +289,19 @@ clusterSetSlotImporting,
 clusterSetSlotMigrating,
 clusterGetKeysInSlot,
 command,
-readOnly
+readOnly,
+
+-- * Redis Function
+fCall,
+fCallRo,
+FunctionLoadOpts(..),
+functionLoad,
+functionDelete,
+FunctionListOpts(..),
+FunctionListResponse(..),
+FunctionListLibraryEntry(..),
+FunctionListFunctionEntry(..),
+functionList
 -- * Unimplemented Commands
 -- |These commands are not implemented, as of now. Library
 --  users can implement these or other commands from

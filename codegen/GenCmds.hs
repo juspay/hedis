@@ -88,6 +88,12 @@ blacklist = [ manual "AUTH" ["auth"]
             , manualWithType "ZADD"
                 ["zadd", "zaddOpts"]
                 ["ZaddOpts(..)", "defaultZaddOpts"]
+            , manualWithType "GEOADD"
+                ["geoadd","geoaddOpts"]
+                ["GeoAddOpts(..)","defaultGeoAddOpts"]
+            , manualWithType "GEOSEARCH"
+                ["geosearch","geosearchWithOpts"]
+                ["GeoFrom(FromMember,FromLonLat),GeoBy(ByRadius,ByBox)","GeoSearchOpts(..)","defaultGeoSearchOpts","OrderOption(..)","CountOption(..)"]
             , manualWithType "MIGRATE"
                 ["migrate", "migrateMultiple"]
                 ["MigrateOpts(..)", "defaultMigrateOpts"]

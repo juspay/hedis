@@ -12,11 +12,12 @@ main = do
 
 tests :: Connection -> [Test.Test]
 tests conn = map ($conn) $ concat
-    [ testsMisc, testsKeys, testsStrings, [testHashes], testsLists, testsSets, [testHyperLogLog]
+    [ testsGeoSets,testsMisc, testsKeys, testsStrings, [testHashes], testsLists, testsSets, [testHyperLogLog]
     , testsZSets, [testPubSub], [testTransaction], [testScripting]
     , testsConnection, testsServer, [testScans, testSScan, testHScan, testZScan], [testZrangelex]
     , [testXAddRead, testXReadGroup, testXRange, testXpending, testXClaim, testXInfo, testXDel, testXTrim]
     , testPubSubThreaded
+    , [testFunctionLoad, testFCall, testFunctionList, testFunctionDelete]
       -- should always be run last as connection gets closed after it
     , [testQuit]
     ]
@@ -32,3 +33,6 @@ testsConnection = [ testConnectAuth, testConnectAuthUnexpected, testConnectDb
 
 testsKeys :: [Test]
 testsKeys = [ testKeys, testKeysNoncluster, testExpireAt, testSort, testGetType, testObject ]
+
+testsGeoSets :: [Test]
+testsGeoSets = [testsGeoSet]
