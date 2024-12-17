@@ -92,15 +92,7 @@ library
                     network-uri,
                     unliftio-core,
                     random,
-                    extra,
-                    http-client,
-                    http-client-tls,
-                    http-types,
-                    aeson,
-                    jwt,
-                    cryptonite,
-                    containers,
-                    time
+                    extra
   if !impl(ghc >= 8.0)
     build-depends:
       semigroups >= 0.11 && < 0.19
@@ -119,22 +111,22 @@ library
                     Database.Redis.ManualCommands,
                     Database.Redis.URL,
                     Database.Redis.ConnectionContext
-                    Database.Redis.GcpAuthToken
   other-extensions: StrictData
 
 benchmark hedis-benchmark
     default-language: Haskell2010
     type: exitcode-stdio-1.0
     hs-source-dirs: benchmark
-    main-is: Benchmark.hs
+    main-is: ClusterBenchmark.hs
     build-depends:
         base == 4.*,
         mtl >= 2.0,
         hedis,
         bytestring,
         time >= 1.2,
-        random
-    other-modules: ClusterBenchmark
+        random,
+        text
+    -- other-modules: Benchmark
     ghc-options: -O2 -Wall -rtsopts
     if flag(dev)
       ghc-options: -Werror
