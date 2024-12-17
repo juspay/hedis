@@ -164,7 +164,6 @@ createConnection ConnInfo{..} = do
                Just tlsParams -> PP.enableTLS tlsParams conn
     PP.beginReceiving conn'
     connectAuth' <- getConnectionAuth connectAuth maybeAuthTokenRef
-    putStrLn $ "createConnection: redis pass is" <> show connectAuth'
 
     runRedisInternal conn' $ do
         -- AUTH
@@ -187,9 +186,8 @@ createConnection ConnInfo{..} = do
 --  given 'ConnectInfo'. The first connection is not actually established
 --  until the first call to the server.
 connect :: ConnectInfo -> IO Connection
-connect cInfo@ConnInfo{..} = do
-    putStrLn "NonClusteredConnection"
-    NonClusteredConnection <$> createPool (createConnection cInfo) PP.disconnect 1 connectMaxIdleTime connectMaxConnections
+connect cInfo@ConnInfo{..} = NonClusteredConnection <$> 
+    createPool (createConnection cInfo) PP.disconnect 1 connectMaxIdleTime connectMaxConnections
 
 -- |Constructs a 'Connection' pool to a Redis server designated by the
 --  given 'ConnectInfo', then tests if the server is actually there.
@@ -197,7 +195,6 @@ connect cInfo@ConnInfo{..} = do
 --  established.
 checkedConnect :: ConnectInfo -> IO Connection
 checkedConnect connInfo = do
-    putStrLn "inside checkedConnect"
     conn <- connect connInfo
     runRedis conn $ void ping
     return conn
@@ -241,7 +238,6 @@ instance Exception ClusterConnectError
 -- - PUBLISH, SUBSCRIBE, PSUBSCRIBE, UNSUBSCRIBE, PUNSUBSCRIBE, RESET
 connectCluster :: ConnectInfo -> IO Connection
 connectCluster bootstrapConnInfo@ConnInfo{connectMaxConnections,connectMaxIdleTime,requestTimeout} = do
-    putStrLn "ClusteredConnection"
     conn <- createConnection bootstrapConnInfo
     slotsResponse <- runRedisInternal conn clusterSlots
     shardMap <- case slotsResponse of
@@ -263,7 +259,6 @@ connectWithAuth ConnInfo{connectTLSParams,connectAuth,connectReadOnly,connectTim
                 Just tlsParams -> PP.enableTLS tlsParams conn
     PP.beginReceiving conn'
     connectAuth' <- getConnectionAuth connectAuth maybeAuthTokenRef
-    putStrLn $ "connectWithAuth: redis pass is" <> show connectAuth'
     runRedisInternal conn' $ do
         -- AUTH
         case connectAuth' of

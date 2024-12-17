@@ -117,16 +117,15 @@ benchmark hedis-benchmark
     default-language: Haskell2010
     type: exitcode-stdio-1.0
     hs-source-dirs: benchmark
-    main-is: ClusterBenchmark.hs
+    main-is: Benchmark.hs
     build-depends:
         base == 4.*,
         mtl >= 2.0,
         hedis,
         bytestring,
         time >= 1.2,
-        random,
-        text
-    -- other-modules: Benchmark
+        random
+    other-modules: ClusterBenchmark
     ghc-options: -O2 -Wall -rtsopts
     if flag(dev)
       ghc-options: -Werror
