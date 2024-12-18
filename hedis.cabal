@@ -124,7 +124,8 @@ benchmark hedis-benchmark
         hedis,
         bytestring,
         time >= 1.2,
-        random
+        random,
+        file-embed
     other-modules: ClusterBenchmark
     ghc-options: -O2 -Wall -rtsopts
     if flag(dev)
@@ -150,7 +151,8 @@ test-suite hedis-test
         mtl == 2.*,
         test-framework,
         test-framework-hunit,
-        time
+        time,
+        file-embed
     -- We use -O0 here, since GHC takes *very* long to compile so many constants
     ghc-options: -O0 -Wall -rtsopts -fno-warn-unused-do-bind
     if flag(dev)
@@ -176,7 +178,8 @@ test-suite hedis-test-cluster
         mtl == 2.*,
         test-framework,
         test-framework-hunit,
-        time
+        time,
+        file-embed
     -- We use -O0 here, since GHC takes *very* long to compile so many constants
     ghc-options: -O0 -Wall -rtsopts -fno-warn-unused-do-bind
     if flag(dev)

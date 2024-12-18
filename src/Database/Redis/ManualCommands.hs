@@ -7,6 +7,7 @@ import Data.ByteString (ByteString, empty, append)
 import qualified Data.ByteString.Char8 as Char8
 import qualified Data.ByteString as BS
 import Data.Maybe (maybeToList, catMaybes)
+import Data.Either.Extra (mapLeft)
 #if __GLASGOW_HASKELL__ < 808
 import Data.Semigroup ((<>))
 #endif
@@ -599,6 +600,130 @@ zaddOpts key scoreMembers ZaddOpts{..} =
     condition = map encode $ maybeToList zaddCondition
     change = ["CH" | zaddChange]
     increment = ["INCR" | zaddIncrement]
+
+
+data GeoAddOpts = GeoAddOpts
+  { geoAddCondition :: Maybe Condition  -- ^ NX or XX options
+  , geoAddChange    :: Bool             -- ^ CH option
+  } deriving (Show, Eq)
+
+
+defaultGeoAddOpts :: GeoAddOpts
+defaultGeoAddOpts = GeoAddOpts
+  { geoAddCondition = Nothing
+  , geoAddChange    = False
+  }
+
+
+geoadd
+    :: (RedisCtx m f)
+    => ByteString                     -- ^ Key
+    -> [(Double, Double, ByteString)] -- ^ List of (longitude, latitude, member) tuples
+    -> m (f Integer)                  -- ^ Number of elements added to the sorted set
+geoadd key members = geoaddOpts key members defaultGeoAddOpts
+
+-- | GeoAdd with options
+geoaddOpts
+    :: (RedisCtx m f)
+    => ByteString                     -- ^ Key
+    -> [(Double, Double, ByteString)] -- ^ List of (longitude, latitude, member) tuples
+    -> GeoAddOpts                    -- ^ Options
+    -> m (f Integer)                  -- ^ Number of elements added to the sorted set
+geoaddOpts key members GeoAddOpts{..} =
+    sendRequest $ concat [["GEOADD", key], condition, change] ++ concatMap encodeMember members
+  where
+    encodeMember (lon, lat, member) = [encode lon, encode lat, member]
+    condition = map encode $ maybeToList geoAddCondition
+    change =  ["CH" | geoAddChange]
+
+
+geosearch 
+    :: (RedisCtx m f) 
+    => ByteString  -- ^ Key where the geo set is stored.
+    -> GeoFrom     -- ^ Search origin: either a member or coordinates.
+    -> GeoBy       -- ^ Search shape: radius or bounding box.
+    -> m (f [ByteString])  -- ^ Search results.
+geosearch key from by = geosearchWithOpts key from by defaultGeoSearchOpts
+
+-- | GeoSearch with options.
+geosearchWithOpts 
+    :: (RedisCtx m f) 
+    => ByteString  -- ^ Key where the geo set is stored.
+    -> GeoFrom     -- ^ Search origin: either a member or coordinates.
+    -> GeoBy       -- ^ Search shape: radius or bounding box.
+    -> GeoSearchOpts -- ^ Options
+    -> m (f [ByteString])  -- ^ Search results.
+geosearchWithOpts key from by GeoSearchOpts{..} =
+    sendRequest $ concat 
+        [ ["GEOSEARCH", key]
+        , encodeArgs from
+        , encodeArgs by
+        , maybe [] encodeArgs order
+        , maybe [] encodeArgs fetchCount
+        , ["WITHCOORD" | withCoord]
+        , ["WITHDIST" | withDist]
+        , ["WITHHASH" | withHash]
+        ]
+data GeoSearchOpts = GeoSearchOpts
+    { order      :: Maybe OrderOption       -- ^ Order of the results: ASC or DESC
+    , fetchCount :: Maybe CountOption       -- ^ Count option for the number of results
+    , withCoord  :: Bool                    -- ^ Include coordinates in the results
+    , withDist   :: Bool                    -- ^ Include distances in the results
+    , withHash   :: Bool                    -- ^ Include hashes in the results
+    }
+
+-- | order option for GeoSearch.
+data OrderOption
+    = ASC  -- ^ Ascending order
+    | DESC -- ^ Descending order
+
+-- | count option for GeoSearch.
+data CountOption = CountOption
+    { countValue :: Integer  -- ^ Number of results to return
+    , anyFlag    :: Bool     -- ^ Whether to use the ANY option
+    }
+
+defaultGeoSearchOpts :: GeoSearchOpts
+defaultGeoSearchOpts = GeoSearchOpts
+    { order = Nothing
+    , fetchCount = Nothing
+    , withCoord = False
+    , withDist = False
+    , withHash = False
+    }
+
+
+-- | 'FROM' clause of GEOSEARCH.
+data GeoFrom
+    = FromMember ByteString            -- ^ Search from a member's location.
+    | FromLonLat Double Double         -- ^ Search from specific coordinates.
+
+-- | shape of the GEOSEARCH (radius or box).
+data GeoBy
+    = ByRadius Double ByteString       -- ^ Search within a radius (e.g., "km").
+    | ByBox Double Double ByteString   -- ^ Search within a bounding box.
+
+class EncodeArgs a where
+    encodeArgs :: a -> [ByteString]  -- Each argument fragment as [ByteString]
+
+instance EncodeArgs GeoFrom where
+    encodeArgs (FromMember member) = ["FROMMEMBER", member]
+    encodeArgs (FromLonLat lon lat) = ["FROMLONLAT", encode lon, encode lat]
+
+instance EncodeArgs GeoBy where
+    encodeArgs (ByRadius radius unit) = ["BYRADIUS", encode radius, unit]
+    encodeArgs (ByBox width height unit) = ["BYBOX", encode width, encode height , unit]
+
+instance EncodeArgs OrderOption where
+    encodeArgs ASC  = ["ASC"]
+    encodeArgs DESC = ["DESC"]
+
+instance EncodeArgs CountOption where
+    encodeArgs (CountOption n anyFlag) =
+        if anyFlag
+        then ["COUNT", encode n, "ANY"]
+        else ["COUNT", encode n]
+
 
 
 data ReplyMode = On | Off | Skip deriving (Show, Eq)
@@ -1431,3 +1556,96 @@ command = sendRequest ["COMMAND"]
 
 readOnly :: (RedisCtx m f) => m (f Status)
 readOnly = sendRequest ["READONLY"]
+
+fCall
+    :: (RedisCtx m f, RedisResult a)
+    => ByteString -- function name
+    -> [ByteString] -- list of keys
+    -> [ByteString] -- list of arguments
+    -> m (f a)
+fCall funcName keys args = sendRequest (["FCALL", funcName, encode (toInteger $ length keys)] ++ keys ++ args)
+
+fCallRo
+    :: (RedisCtx m f, RedisResult a)
+    => ByteString -- function name
+    -> [ByteString] -- list of keys
+    -> [ByteString] -- list of arguments
+    -> m (f a)
+fCallRo funcName keys args = sendRequest (["FCALL_RO", funcName, encode (toInteger $ length keys)] ++ keys ++ args)
+
+data FunctionLoadOpts = REPLACE | NO_REPLACE deriving (Show, Eq)
+
+functionLoad
+    :: (RedisCtx m f)
+    => ByteString
+    -> Maybe FunctionLoadOpts
+    -> m [Either Reply ByteString]
+functionLoad functionStr opt = do
+    let optStr = case opt of
+            Just REPLACE -> ["REPLACE"]
+            _ -> []
+    sendToAllMasterNodes (["FUNCTION", "LOAD"] ++ optStr ++ [functionStr])
+
+functionDelete
+    :: (RedisCtx m f)
+    => ByteString
+    -> m [Either Reply Status]
+functionDelete libraryName = sendToAllMasterNodes (["FUNCTION", "DELETE", libraryName])
+
+data FunctionListOpts =
+  FunctionListOpts
+    { libraryNamePattern :: Maybe ByteString
+    , withCode :: Maybe Bool
+    } deriving (Show, Eq)
+
+data FunctionListResponse = FunctionListResponse
+    { functionListResponseEntries :: [FunctionListLibraryEntry]
+    } deriving (Show, Eq)
+
+decode' :: (RedisResult a) => Reply -> Reply -> Either Reply a
+decode' r = mapLeft (const r) . decode
+
+instance RedisResult FunctionListResponse where
+    decode (MultiBulk Nothing) = Right $ FunctionListResponse []
+    decode r@(MultiBulk (Just entries)) = do
+        decodeEntries <- mapM (decode' r) entries
+        pure $ FunctionListResponse decodeEntries
+    decode r = Left r
+
+data FunctionListLibraryEntry = FunctionListLibraryEntry
+    { libraryName :: ByteString
+    , engine :: ByteString
+    , functions :: [FunctionListFunctionEntry]
+    , sourceCode :: Maybe ByteString
+    } deriving (Show, Eq)
+
+instance RedisResult FunctionListLibraryEntry where
+    decode r@(MultiBulk (Just ((Bulk (Just "library_name")) : libraryName : (Bulk (Just "engine")) : engine : (Bulk (Just "functions")) : (MultiBulk (Just functions)) : xs))) = do
+        sourceCode <-
+            case xs of
+                [] -> Right Nothing
+                [Bulk (Just "library_code"), code] -> sequence (Just $ decode' r code)
+                _ -> Left r
+        FunctionListLibraryEntry <$> (decode' r libraryName) <*> (decode' r engine) <*> (mapM (decode' r) functions) <*> (pure sourceCode)
+    decode r = Left r
+
+data FunctionListFunctionEntry = FunctionListFunctionEntry
+    { functionName :: ByteString
+    , description :: Maybe ByteString
+    , flags :: [ByteString]
+    } deriving (Show, Eq)
+
+instance RedisResult FunctionListFunctionEntry where
+    decode r@(MultiBulk (Just [Bulk (Just "name"), functionName, Bulk (Just "description"), description, Bulk (Just "flags"), flags])) =
+        FunctionListFunctionEntry <$> (decode' r functionName) <*> (decode' r description) <*> (decode' r flags)
+    decode r = Left r
+
+functionList
+    :: (RedisCtx m f)
+    => FunctionListOpts
+    -> m (f FunctionListResponse)
+functionList FunctionListOpts{..} =
+    sendRequest $ concat [["FUNCTION", "LIST"], libPat, code]
+    where
+        libPat = maybe [] (\b -> ["LIBRARYNAME", b]) libraryNamePattern
+        code = maybe [] (\c -> if c then ["WITHCODE"] else []) withCode

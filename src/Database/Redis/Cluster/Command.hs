@@ -155,6 +155,7 @@ parseMovable ("ZUNIONSTORE":_:rest) = readNumKeys rest
 parseMovable ("ZINTERSTORE":_:rest) = readNumKeys rest
 parseMovable ("XREAD":rest) = readXreadKeys rest
 parseMovable ("XREADGROUP":"GROUP":_:_:rest) = readXreadgroupKeys rest
+parseMovable ("FCALL":_:rest) = readNumKeys rest
 parseMovable _ = Nothing
 
 readXreadKeys :: [BS.ByteString] -> Maybe [BS.ByteString]
