@@ -3,6 +3,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE DeriveGeneric #-}
 module Database.Redis.Connection where
 
 import Control.Exception
@@ -34,7 +35,7 @@ import Database.Redis.Cluster(ShardMap(..), Node(..), Shard(..), NodeConnectionM
 import qualified Database.Redis.Cluster as Cluster
 import qualified Database.Redis.ConnectionContext as CC
 import qualified System.Timeout as T
-
+import Data.IORef
 import Database.Redis.Commands
     ( ping
     , select
@@ -92,7 +93,17 @@ data ConnectInfo = ConnInfo
     --   get connected in this interval of time.
     , connectTLSParams      :: Maybe ClientParams
     -- ^ Optional TLS parameters. TLS will be enabled if this is provided.
+    , maybeAuthTokenRef     :: Maybe ShowableIORefByteString
+    , requestTimeout        :: Maybe Double
+    -- ^ timeout for a redis command request in seconds example: 0.5 seconds (500 milliseconds)
+    -- post requestTimeout, TimeoutException will be thrown. This is now only applicable to cluster redis.
+    -- TODO add for non cluster redis also
     } deriving Show
+
+newtype ShowableIORefByteString = ShowableIORefByteString (IORef B.ByteString)
+
+instance Show ShowableIORefByteString where
+    show _ = "ioref bytestring" :: String
 
 data ConnectError = ConnectAuthError Reply
                   | ConnectSelectError Reply
@@ -124,6 +135,8 @@ defaultConnectInfo = ConnInfo
     , connectMaxIdleTime    = 30
     , connectTimeout        = Nothing
     , connectTLSParams      = Nothing
+    , maybeAuthTokenRef     = Nothing
+    , requestTimeout        = Nothing
     }
 
 defaultClusterConnectInfo :: ConnectInfo
@@ -137,6 +150,8 @@ defaultClusterConnectInfo = ConnInfo
     , connectMaxIdleTime    = 30
     , connectTimeout        = Nothing
     , connectTLSParams      = Nothing
+    , maybeAuthTokenRef     = Nothing
+    , requestTimeout        = Nothing
     }
 
 createConnection :: ConnectInfo -> IO PP.Connection
@@ -148,10 +163,11 @@ createConnection ConnInfo{..} = do
                Nothing -> return conn
                Just tlsParams -> PP.enableTLS tlsParams conn
     PP.beginReceiving conn'
+    connectAuth' <- getConnectionAuth connectAuth maybeAuthTokenRef
 
     runRedisInternal conn' $ do
         -- AUTH
-        case connectAuth of
+        case connectAuth' of
             Nothing   -> return ()
             Just pass -> do
               resp <- auth pass
@@ -170,7 +186,7 @@ createConnection ConnInfo{..} = do
 --  given 'ConnectInfo'. The first connection is not actually established
 --  until the first call to the server.
 connect :: ConnectInfo -> IO Connection
-connect cInfo@ConnInfo{..} = NonClusteredConnection <$>
+connect cInfo@ConnInfo{..} = NonClusteredConnection <$> 
     createPool (createConnection cInfo) PP.disconnect 1 connectMaxIdleTime connectMaxConnections
 
 -- |Constructs a 'Connection' pool to a Redis server designated by the
@@ -221,7 +237,7 @@ instance Exception ClusterConnectError
 -- - MOVE, SELECT
 -- - PUBLISH, SUBSCRIBE, PSUBSCRIBE, UNSUBSCRIBE, PUNSUBSCRIBE, RESET
 connectCluster :: ConnectInfo -> IO Connection
-connectCluster bootstrapConnInfo@ConnInfo{connectMaxConnections,connectMaxIdleTime} = do
+connectCluster bootstrapConnInfo@ConnInfo{connectMaxConnections,connectMaxIdleTime,requestTimeout} = do
     conn <- createConnection bootstrapConnInfo
     slotsResponse <- runRedisInternal conn clusterSlots
     shardMap <- case slotsResponse of
@@ -231,20 +247,21 @@ connectCluster bootstrapConnInfo@ConnInfo{connectMaxConnections,connectMaxIdleTi
     case commandInfos of
         Left e -> throwIO $ ClusterConnectError e
         Right infos -> do
-            let withAuth = connectWithAuth bootstrapConnInfo 
-            clusterConnection <- Cluster.createClusterConnectionPools withAuth connectMaxConnections connectMaxIdleTime infos shardMap
+            let withAuth = connectWithAuth bootstrapConnInfo
+            clusterConnection <- Cluster.createClusterConnectionPools withAuth connectMaxConnections connectMaxIdleTime infos shardMap requestTimeout
             return $ ClusteredConnection bootstrapConnInfo clusterConnection
 
 connectWithAuth :: ConnectInfo -> Cluster.Host -> CC.PortID -> IO CC.ConnectionContext
-connectWithAuth ConnInfo{connectTLSParams,connectAuth,connectReadOnly,connectTimeout} host port = do
+connectWithAuth ConnInfo{connectTLSParams,connectAuth,connectReadOnly,connectTimeout,maybeAuthTokenRef} host port = do
     conn <- PP.connect host port $ clusterConnectTimeoutinUs <$> connectTimeout
     conn' <- case connectTLSParams of
                 Nothing -> return conn
                 Just tlsParams -> PP.enableTLS tlsParams conn
     PP.beginReceiving conn'
+    connectAuth' <- getConnectionAuth connectAuth maybeAuthTokenRef
     runRedisInternal conn' $ do
         -- AUTH
-        case connectAuth of
+        case connectAuth' of
             Nothing   -> return ()
             Just pass -> do
                 resp <- auth pass
@@ -335,3 +352,13 @@ refreshShardMapWithConn pipelineConn _ = do
         Right slots -> case clusterSlotsResponseEntries slots of 
             [] -> throwIO $ ClusterConnectError $ SingleLine "empty slotsResponse"
             _ -> shardMapFromClusterSlotsResponse slots
+
+-- If dynamic auth is enabled then this function read the auth string from IORef where a background thread
+-- is updating the IORef on regular interval
+getConnectionAuth :: Maybe B.ByteString -> Maybe ShowableIORefByteString -> IO (Maybe B.ByteString)
+getConnectionAuth connectAuth maybeAuthTokenRef = 
+    case maybeAuthTokenRef of
+            Just (ShowableIORefByteString authTokenRef) -> do
+                authToken <- readIORef authTokenRef
+                return $ Just authToken
+            _ -> return connectAuth
