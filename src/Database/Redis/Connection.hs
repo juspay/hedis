@@ -3,7 +3,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE NamedFieldPuns #-}
-{-# LANGUAGE DeriveGeneric #-}
 module Database.Redis.Connection where
 
 import Control.Exception
@@ -35,7 +34,7 @@ import Database.Redis.Cluster(ShardMap(..), Node(..), Shard(..), NodeConnectionM
 import qualified Database.Redis.Cluster as Cluster
 import qualified Database.Redis.ConnectionContext as CC
 import qualified System.Timeout as T
-import Data.IORef
+import Data.IORef(IORef, readIORef)
 import Database.Redis.Commands
     ( ping
     , select
@@ -72,7 +71,7 @@ data Connection
 data ConnectInfo = ConnInfo
     { connectHost           :: NS.HostName
     , connectPort           :: CC.PortID
-    , connectAuth           :: Maybe B.ByteString
+    , connectAuth           :: Maybe ConnectAuth
     , connectReadOnly       :: Bool
     -- ^ When the server is protected by a password, set 'connectAuth' to 'Just'
     --   the password. Each connection will then authenticate by the 'auth'
@@ -93,12 +92,14 @@ data ConnectInfo = ConnInfo
     --   get connected in this interval of time.
     , connectTLSParams      :: Maybe ClientParams
     -- ^ Optional TLS parameters. TLS will be enabled if this is provided.
-    , maybeAuthTokenRef     :: Maybe ShowableIORefByteString
     , requestTimeout        :: Maybe Double
     -- ^ timeout for a redis command request in seconds example: 0.5 seconds (500 milliseconds)
     -- post requestTimeout, TimeoutException will be thrown. This is now only applicable to cluster redis.
     -- TODO add for non cluster redis also
     } deriving Show
+
+data ConnectAuth = Static B.ByteString | Dynamic ShowableIORefByteString
+        deriving Show
 
 newtype ShowableIORefByteString = ShowableIORefByteString (IORef B.ByteString)
 
@@ -135,7 +136,6 @@ defaultConnectInfo = ConnInfo
     , connectMaxIdleTime    = 30
     , connectTimeout        = Nothing
     , connectTLSParams      = Nothing
-    , maybeAuthTokenRef     = Nothing
     , requestTimeout        = Nothing
     }
 
@@ -150,7 +150,6 @@ defaultClusterConnectInfo = ConnInfo
     , connectMaxIdleTime    = 30
     , connectTimeout        = Nothing
     , connectTLSParams      = Nothing
-    , maybeAuthTokenRef     = Nothing
     , requestTimeout        = Nothing
     }
 
@@ -163,7 +162,7 @@ createConnection ConnInfo{..} = do
                Nothing -> return conn
                Just tlsParams -> PP.enableTLS tlsParams conn
     PP.beginReceiving conn'
-    connectAuth' <- getConnectionAuth connectAuth maybeAuthTokenRef
+    connectAuth' <- getConnectionAuthByteString connectAuth
 
     runRedisInternal conn' $ do
         -- AUTH
@@ -252,13 +251,13 @@ connectCluster bootstrapConnInfo@ConnInfo{connectMaxConnections,connectMaxIdleTi
             return $ ClusteredConnection bootstrapConnInfo clusterConnection
 
 connectWithAuth :: ConnectInfo -> Cluster.Host -> CC.PortID -> IO CC.ConnectionContext
-connectWithAuth ConnInfo{connectTLSParams,connectAuth,connectReadOnly,connectTimeout,maybeAuthTokenRef} host port = do
+connectWithAuth ConnInfo{connectTLSParams,connectAuth,connectReadOnly,connectTimeout} host port = do
     conn <- PP.connect host port $ clusterConnectTimeoutinUs <$> connectTimeout
     conn' <- case connectTLSParams of
                 Nothing -> return conn
                 Just tlsParams -> PP.enableTLS tlsParams conn
     PP.beginReceiving conn'
-    connectAuth' <- getConnectionAuth connectAuth maybeAuthTokenRef
+    connectAuth' <- getConnectionAuthByteString connectAuth
     runRedisInternal conn' $ do
         -- AUTH
         case connectAuth' of
@@ -353,12 +352,12 @@ refreshShardMapWithConn pipelineConn _ = do
             [] -> throwIO $ ClusterConnectError $ SingleLine "empty slotsResponse"
             _ -> shardMapFromClusterSlotsResponse slots
 
--- If dynamic auth is enabled then this function read the auth string from IORef where a background thread
--- is updating the IORef on regular interval
-getConnectionAuth :: Maybe B.ByteString -> Maybe ShowableIORefByteString -> IO (Maybe B.ByteString)
-getConnectionAuth connectAuth maybeAuthTokenRef = 
-    case maybeAuthTokenRef of
-            Just (ShowableIORefByteString authTokenRef) -> do
+-- This function gets the byteString from the connectAuth
+getConnectionAuthByteString :: Maybe ConnectAuth -> IO (Maybe B.ByteString)
+getConnectionAuthByteString connectAuth = 
+    case connectAuth of
+            Just (Dynamic (ShowableIORefByteString authTokenRef)) -> do
                 authToken <- readIORef authTokenRef
                 return $ Just authToken
-            _ -> return connectAuth
+            Just (Static pass) -> return $ Just pass
+            _ -> return Nothing
