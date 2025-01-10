@@ -11,6 +11,7 @@ import Text.Printf
 import qualified Data.ByteString.Char8 as BS
 import qualified ClusterBenchmark as CB
 import Data.FileEmbed (embedFile)
+import Data.Either (partitionEithers)
 
 nRequests, nClients :: Int
 nRequests = 100000
@@ -33,10 +34,10 @@ main = do
           _ -> return ()
     
         return ()
-    fLoadRes <- runRedis conn $ functionLoad fCallLib REPLACE
-    case fLoadRes of
-        Left err -> error $ "functionLoad err :" ++ (show err)
-        _ -> return ()
+    fLoadRes <- runRedis conn $ functionLoad fCallLib (Just REPLACE)
+    case partitionEithers fLoadRes of
+        ([], _) -> return ()
+        (err, _) -> error $ "functionLoad err :" ++ (show err)
     ----------------------------------------------------------------------
     -- Spawn clients
     --

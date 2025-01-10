@@ -503,7 +503,7 @@ testConnectAuth :: Test
 testConnectAuth = testCase "connect/auth" $ do
     configSet "requirepass" "pass" >>=? Ok
     liftIO $ do
-        c <- checkedConnect defaultConnectInfo { connectAuth = Just "pass" }
+        c <- checkedConnect defaultConnectInfo { connectAuth = Just $ Static "pass" }
         runRedis c (ping >>=? Pong)
     auth "pass"                    >>=? Ok
     configSet "requirepass" ""     >>=? Ok
@@ -514,7 +514,7 @@ testConnectAuthUnexpected = testCase "connect/auth/unexpected" $ do
         res <- try $ void $ checkedConnect connInfo
         HUnit.assertEqual "" err res
 
-    where connInfo = defaultConnectInfo { connectAuth = Just "pass" }
+    where connInfo = defaultConnectInfo { connectAuth = Just $ Static "pass" }
           err = Left $ ConnectAuthError $
                   Error "ERR AUTH <password> called without any password configured for the default user. Are you sure your configuration is correct?"
 
@@ -829,7 +829,7 @@ testsGeoSet = testCase "geoadd and geosearch operations" $ do
     geosearch "geoKey" (FromMember "Palermo") (ByRadius 200 "km")  >>=? ["Palermo","Catania","Messina"]
     let opts = GeoSearchOpts
             { order = Just ASC
-            , count = Just (CountOption 1 False)
+            , fetchCount = Just (CountOption 1 False)
             , withCoord = False
             , withDist = False
             , withHash = False

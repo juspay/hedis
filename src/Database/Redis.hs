@@ -192,7 +192,8 @@ module Database.Redis (
     --
     --  > lindex :: ByteString -> Integer -> Redis (Either Reply ByteString)
     --
-    HashSlot, keyToSlot
+    HashSlot, keyToSlot,
+    ShowableIORefByteString(..), ConnectAuth(..)
 ) where
 
 import Database.Redis.Core
@@ -208,7 +209,9 @@ import Database.Redis.Connection
     , ConnectError(..)
     , Connection(..)
     , withConnect
-    , withCheckedConnect)
+    , withCheckedConnect
+    , ShowableIORefByteString(..)
+    , ConnectAuth(..))
 import Database.Redis.ConnectionContext(PortID(..), ConnectionLostException(..), ConnectTimeout(..))
 import Database.Redis.PubSub
 import Database.Redis.Protocol
