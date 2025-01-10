@@ -644,7 +644,7 @@ geosearch
     -> GeoFrom     -- ^ Search origin: either a member or coordinates.
     -> GeoBy       -- ^ Search shape: radius or bounding box.
     -> m (f [ByteString])  -- ^ Search results.
-geosearch key from by = geosearchWithOpts key from by defaultGeoSearchOpts
+geosearch key geoFrom geoBy = geosearchWithOpts key geoFrom geoBy defaultGeoSearchOpts
 
 -- | GeoSearch with options.
 geosearchWithOpts 
@@ -654,11 +654,11 @@ geosearchWithOpts
     -> GeoBy       -- ^ Search shape: radius or bounding box.
     -> GeoSearchOpts -- ^ Options
     -> m (f [ByteString])  -- ^ Search results.
-geosearchWithOpts key from by GeoSearchOpts{..} =
+geosearchWithOpts key geoFrom geoBy GeoSearchOpts{..} =
     sendRequest $ concat 
         [ ["GEOSEARCH", key]
-        , encodeArgs from
-        , encodeArgs by
+        , encodeArgs geoFrom
+        , encodeArgs geoBy
         , maybe [] encodeArgs order
         , maybe [] encodeArgs fetchCount
         , ["WITHCOORD" | withCoord]
