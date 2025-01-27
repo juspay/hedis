@@ -55,6 +55,7 @@ import           Data.List.NonEmpty    (NonEmpty (..))
 import           Data.Typeable         (Typeable)
 import           Data.Unique
 import           Network.Socket        (HostName)
+import Control.Monad.IO.Class (liftIO)
 
 import           Database.Redis hiding (Connection, connect, runRedis)
 import qualified Database.Redis as Redis
