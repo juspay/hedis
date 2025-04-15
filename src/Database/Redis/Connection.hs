@@ -280,8 +280,8 @@ shardMapFromClusterSlotsResponse ClusterSlotsResponse{..} = ShardMap <$> foldr m
     mkShardMap ClusterSlotsResponseEntry{..} accumulator = do
         accumulated <- accumulator
         let master = nodeFromClusterSlotNode True clusterSlotsResponseEntryMaster
-        -- let replicas = map (nodeFromClusterSlotNode False) clusterSlotsResponseEntryReplicas
-        let shard = Shard master []
+        let replicas = map (nodeFromClusterSlotNode False) clusterSlotsResponseEntryReplicas
+        let shard = Shard master replicas
         let slotMap = IntMap.fromList $ map (, shard) [clusterSlotsResponseEntryStartSlot..clusterSlotsResponseEntryEndSlot]
         return $ IntMap.union slotMap accumulated
     nodeFromClusterSlotNode :: Bool -> ClusterSlotsNode -> Node
@@ -294,7 +294,7 @@ shardMapFromClusterSlotsResponse ClusterSlotsResponse{..} = ShardMap <$> foldr m
 refreshShardMap :: ConnectInfo -> Cluster.Connection -> Maybe Cluster.NodeConnection -> IO (ShardMap, NodeConnectionMap)
 refreshShardMap connectInfo@ConnInfo{connectMaxConnections,connectMaxIdleTime} (Cluster.Connection shardNodeVar _ _) nodeConn = do
     modifyMVar shardNodeVar $ \(_, oldNodeConnMap) -> do
-        newShardMap <- refreshShardMapWithNodeConn nodeConn (HM.elems oldNodeConnMap)
+        newShardMap <- refreshShardMapWithNodeConn nodeConn (HM.elems oldNodeConnMap) connectInfo
         newNodeConnMap <- updateNodeConnections newShardMap oldNodeConnMap        
         return ((newShardMap, newNodeConnMap), (newShardMap, newNodeConnMap))
     where
@@ -310,27 +310,19 @@ refreshShardMap connectInfo@ConnInfo{connectMaxConnections,connectMaxIdleTime} (
                         return $ HM.insert nodeid nodeConnPool acc
                  ) HM.empty (nub $ Cluster.nodes newShardMap)
 
-refreshShardMapWithNodeConn :: Maybe Cluster.NodeConnection -> [Cluster.NodeConnection] -> IO ShardMap
-refreshShardMapWithNodeConn _ [] = throwIO $ ClusterConnectError (Error "Couldn't refresh shardMap due to connection error")
-refreshShardMapWithNodeConn maybeNodeConn nodeConnsList = do
-    let numOfNodes = length nodeConnsList
+refreshShardMapWithNodeConn :: Maybe Cluster.NodeConnection -> [Cluster.NodeConnection] -> ConnectInfo -> IO ShardMap
+refreshShardMapWithNodeConn _ [] _ = throwIO $ ClusterConnectError (Error "Couldn't refresh shardMap due to connection error")
+refreshShardMapWithNodeConn maybeNodeConn nodeConnsList connectInfo = do
     selectedIdx <- randomRIO (0, length nodeConnsList - 1)
-    let (Cluster.NodeConnection pool _) = fromMaybe (nodeConnsList !! selectedIdx) maybeNodeConn
-    eresp <- try $ refreshShardMapWithPool pool
-    case eresp of 
-        Left  (_::SomeException) ->  do                 -- retry on other node
-            let otherSelectedIdx                        = (selectedIdx + 1) `mod` numOfNodes
-                (Cluster.NodeConnection otherPool _)    = maybe (nodeConnsList !! otherSelectedIdx) 
-                                                                (\nc -> if nc /= nodeConnsList !! selectedIdx then nodeConnsList !! selectedIdx else nodeConnsList !! otherSelectedIdx) 
-                                                                (maybeNodeConn)
-            refreshShardMapWithPool otherPool
-        Right shardMap -> return shardMap
+    let selectedNode = fromMaybe (nodeConnsList !! selectedIdx) maybeNodeConn
+        retryNodeList = take 3 ([selectedNode] <> filter (\nc -> nc /= selectedNode) nodeConnsList) -- retry on max 3 nodes
+    refreshShardMapWithDNSFallback refreshShardMapWithPool retryNodeList connectInfo
     where 
         refreshShardMapWithPool pool = withResource pool $ 
                 \(ctx,_) -> do
                     pipelineConn <- PP.fromCtx ctx
                     envTimeout <- fromMaybe (10 ^ (5 :: Int)) . (>>= readMaybe) <$> lookupEnv "REDIS_CLUSTER_SLOTS_TIMEOUT"
-                    eresp <- T.timeout envTimeout (try $ refreshShardMapWithConn pipelineConn True) -- racing with delay of default 100 ms 
+                    eresp <- T.timeout envTimeout (try $ refreshShardMapWithConn pipelineConn) -- racing with delay of default 100 ms 
                     case eresp of
                         Nothing -> do
                             print $ "TimeoutForConnection " <> show ctx 
@@ -342,8 +334,8 @@ refreshShardMapWithNodeConn maybeNodeConn nodeConnsList = do
                                     print $ "ShardMapRefreshError-" <> show err 
                                     throwIO $ ClusterConnectError (Error $ Char8.pack ("Couldn't refresh shardMap due to error - " <> show err))
 
-refreshShardMapWithConn :: PP.Connection -> Bool -> IO ShardMap
-refreshShardMapWithConn pipelineConn _ = do
+refreshShardMapWithConn :: PP.Connection -> IO ShardMap
+refreshShardMapWithConn pipelineConn = do
     _ <- PP.beginReceiving pipelineConn
     slotsResponse <- runRedisInternal pipelineConn clusterSlots
     case slotsResponse of
@@ -351,6 +343,25 @@ refreshShardMapWithConn pipelineConn _ = do
         Right slots -> case clusterSlotsResponseEntries slots of 
             [] -> throwIO $ ClusterConnectError $ SingleLine "empty slotsResponse"
             _ -> shardMapFromClusterSlotsResponse slots
+
+-- If all 3 retries fail, will consider cluster went down and make a new connection after DNS resolution for refreshing shard map
+refreshShardMapWithDNSFallback :: 
+    (Pool (CC.ConnectionContext, IOR.IORef (Maybe B.ByteString)) -> IO ShardMap) 
+    -> [Cluster.NodeConnection] 
+    -> ConnectInfo 
+    -> IO ShardMap
+refreshShardMapWithDNSFallback _ [] connectInfo = findShardMapFromDNS connectInfo
+refreshShardMapWithDNSFallback refreshShardMapWithPool (conn:connList) connectInfo = do
+    let (Cluster.NodeConnection pool _) = conn
+    res <- try $ refreshShardMapWithPool pool
+    case res of
+        Left (_ :: SomeException) -> refreshShardMapWithDNSFallback refreshShardMapWithPool connList connectInfo
+        Right shardMap -> pure shardMap
+
+findShardMapFromDNS :: ConnectInfo -> IO ShardMap
+findShardMapFromDNS connectInfo = do
+    conn <- createConnection connectInfo
+    refreshShardMapWithConn conn
 
 -- This function gets the byteString from the connectAuth
 getConnectionAuthByteString :: Maybe ConnectAuth -> IO (Maybe B.ByteString)
