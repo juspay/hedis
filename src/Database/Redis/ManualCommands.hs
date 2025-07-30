@@ -1,4 +1,4 @@
-{-# LANGUAGE CPP, OverloadedStrings, RecordWildCards, FlexibleContexts #-}
+{-# LANGUAGE CPP, OverloadedStrings, RecordWildCards, FlexibleContexts, DeriveAnyClass, DeriveGeneric #-}
 
 module Database.Redis.ManualCommands where
 
@@ -15,6 +15,7 @@ import Database.Redis.Core
 import Database.Redis.Protocol
 import Database.Redis.Types
 import qualified Database.Redis.Cluster.Command as CMD
+import GHC.Generics
 
 
 objectRefcount
@@ -643,7 +644,7 @@ geosearch
     -> GeoFrom     -- ^ Search origin: either a member or coordinates.
     -> GeoBy       -- ^ Search shape: radius or bounding box.
     -> m (f [ByteString])  -- ^ Search results.
-geosearch key from by = geosearchWithOpts key from by defaultGeoSearchOpts
+geosearch key geoFrom geoBy = geosearchWithOpts key geoFrom geoBy defaultGeoSearchOpts
 
 -- | GeoSearch with options.
 geosearchWithOpts 
@@ -653,11 +654,11 @@ geosearchWithOpts
     -> GeoBy       -- ^ Search shape: radius or bounding box.
     -> GeoSearchOpts -- ^ Options
     -> m (f [ByteString])  -- ^ Search results.
-geosearchWithOpts key from by GeoSearchOpts{..} =
+geosearchWithOpts key geoFrom geoBy GeoSearchOpts{..} =
     sendRequest $ concat 
         [ ["GEOSEARCH", key]
-        , encodeArgs from
-        , encodeArgs by
+        , encodeArgs geoFrom
+        , encodeArgs geoBy
         , maybe [] encodeArgs order
         , maybe [] encodeArgs fetchCount
         , ["WITHCOORD" | withCoord]
@@ -963,7 +964,7 @@ xadd key entryId fieldValues = xaddOpts key entryId fieldValues NoArgs
 data StreamsRecord = StreamsRecord
     { recordId :: ByteString
     , keyValues :: [(ByteString, ByteString)]
-    } deriving (Show, Eq)
+    } deriving (Show, Eq, Read, Generic)
 
 instance RedisResult StreamsRecord where
     decode (MultiBulk (Just [Bulk (Just recordId), MultiBulk (Just rawKeyValues)])) = do
@@ -999,7 +1000,7 @@ defaultXreadOpts = XReadOpts { block = Nothing, recordCount = Nothing, noack = F
 data XReadResponse = XReadResponse
     { stream :: ByteString
     , records :: [StreamsRecord]
-    } deriving (Show, Eq)
+    } deriving (Show, Eq ,Read, Generic)
 
 instance RedisResult XReadResponse where
     decode (MultiBulk (Just [Bulk (Just stream), MultiBulk (Just rawRecords)])) = do
@@ -1179,6 +1180,23 @@ xpendingDetail
 xpendingDetail stream group startId endId count consumer = sendRequest $
     ["XPENDING", stream, group, startId, endId, encode count] ++ consumerArg
     where consumerArg = maybe [] (\c -> [c]) consumer
+
+xpendingWithMinIdleTime
+  :: (RedisCtx m f)
+  => ByteString          -- ^ stream key
+  -> ByteString          -- ^ group name
+  -> Integer       -- ^ minIdleTime (in milliseconds).
+  -> Integer             -- ^ count (max number of entries to return)
+  -> Maybe ByteString    -- ^ optional consumer name
+  -> m (f [XPendingDetailRecord])
+xpendingWithMinIdleTime stream group minIdleTime count consumerM = sendRequest $
+    ["XPENDING", stream, group]
+    ++ idleArg
+    ++ ["-", "+", encode count] -- Hardcoding "-" and "+" for start and end IDs
+    ++ consumerArg
+  where
+    idleArg = ["IDLE", encode minIdleTime]
+    consumerArg = maybe [] (\c -> [c]) consumerM
 
 data XClaimOpts = XClaimOpts
     { xclaimIdle :: Maybe Integer
