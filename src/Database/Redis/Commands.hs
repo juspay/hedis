@@ -266,6 +266,9 @@ xpendingWithMinIdleTime, -- |Get pending messages with idle time and full range.
 XClaimOpts(..),
 defaultXClaimOpts,
 xclaim, -- |Change ownership of some messages to the given consumer, returning the updated messages. The Redis @XCLAIM@ command is split into 'xclaim' and 'xclaimJustIds'. Since Redis 5.0.0
+XAutoClaimOpts(..),
+defaultXAutoClaimOpts,
+xAutoClaim, -- |Claim ownership of pending stream entries that have been idle longer than a given minimum idle time. This is a wrapper for the Redis @XAUTOCLAIM@ command (introduced in Redis 6.2).
 xclaimJustIds, -- |Change ownership of some messages to the given consumer, returning only the changed message IDs. The Redis @XCLAIM@ command is split into 'xclaim' and 'xclaimJustIds'. Since Redis 5.0.0
 XInfoConsumersResponse(..),
 xinfoConsumers, -- |Get info about consumers in a group. The Redis command @XINFO@ is split into 'xinfoConsumers', 'xinfoGroups', and 'xinfoStream'. Since Redis 5.0.0
