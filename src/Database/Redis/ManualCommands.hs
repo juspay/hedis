@@ -1224,6 +1224,16 @@ defaultXAutoClaimOpts = XAutoClaimOpts
     , xjustIds = False
     }
 
+data XAutoClaimResponse = XAutoClaimResponse
+    { nextStartId :: ByteString
+    , claimedRecords :: [StreamsRecord]
+    } deriving (Show, Eq, Read, Generic)
+
+instance RedisResult XAutoClaimResponse where
+    decode (MultiBulk (Just [Bulk (Just nextStartId), MultiBulk (Just rawRecords)])) = do
+        claimedRecords <- mapM decode rawRecords
+        return XAutoClaimResponse{..}
+    decode a = Left a
 
 -- |Format a request for XCLAIM.
 xclaimRequest
@@ -1263,7 +1273,7 @@ xAutoClaim
     -> Integer -- ^ min idle time
     -> ByteString -- ^ start ID
     -> XAutoClaimOpts -- ^ count
-    -> m (f [StreamsRecord])
+    -> m (f XAutoClaimResponse)
 xAutoClaim stream group consumer minIdleTime startId XAutoClaimOpts{..} = sendRequest $
     ["XAUTOCLAIM", stream, group, consumer, encode minIdleTime, startId] ++ optArgs
     where optArgs = countArg ++ justIdsArg

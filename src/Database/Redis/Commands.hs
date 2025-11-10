@@ -267,6 +267,7 @@ XClaimOpts(..),
 defaultXClaimOpts,
 xclaim, -- |Change ownership of some messages to the given consumer, returning the updated messages. The Redis @XCLAIM@ command is split into 'xclaim' and 'xclaimJustIds'. Since Redis 5.0.0
 XAutoClaimOpts(..),
+XAutoClaimResponse(..),
 defaultXAutoClaimOpts,
 xAutoClaim, -- |Claim ownership of pending stream entries that have been idle longer than a given minimum idle time. This is a wrapper for the Redis @XAUTOCLAIM@ command (introduced in Redis 6.2).
 xclaimJustIds, -- |Change ownership of some messages to the given consumer, returning only the changed message IDs. The Redis @XCLAIM@ command is split into 'xclaim' and 'xclaimJustIds'. Since Redis 5.0.0

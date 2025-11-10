@@ -790,6 +790,41 @@ testXClaim =
       ["122-0"] >>=?
       ["122-0"]
 
+-- testXAutoClaim :: Test
+-- testXAutoClaim =
+-- 	testCase "xAutoClaim" $ do
+-- 		xadd "somestream" "121" [("key1", "value1")] >>=? "121-0"
+-- 		xgroupCreate "somestream" "somegroup" "0" >>=? Ok
+		-- xreadGroupOpts`
+    --   "somegroup"
+    --   "consumer1"
+    --   [("somestream", ">")]
+    --   (defaultXreadOpts {recordCount = Just 1}) >>=?
+    --   Just
+    --     [ XReadResponse
+    --         { stream = "somestream"
+    --         , records =
+    --             [ StreamsRecord
+    --                 {recordId = "121-0", keyValues = [("key1", "value1")]}
+    --             ]
+    --         }
+    --     ]
+		-- xAutoClaim
+		-- 	"somestream"
+		-- 	"somegroup"
+		-- 	"consumer2"
+		-- 	100
+		-- 	"0-0"
+		-- 	(defaultXAutoClaimOpts {xcount = Just 1}) >>=?
+		-- 	XAutoClaimResponse
+		-- 		{ nextStartId = "0-0"
+		-- 		, claimedRecords =
+		-- 				[ StreamsRecord
+		-- 						{recordId = "121-0", keyValues = [("key1", "value1")]}
+		-- 				]
+		-- 		}
+
+
 testXInfo ::Test
 testXInfo = testCase "xinfo" $ do
     xadd "somestream" "121" [("key1", "value1")]
