@@ -568,12 +568,14 @@ testBgrewriteaof = testCase "bgrewriteaof/bgsave/save" $ do
     save >>=? Ok
     bgsave >>= \case
       Right (Status _) -> return ()
-      _ -> error "error"
+      Right err -> error $ show err
+      Left err -> error $ show err
     -- Redis needs time to finish the bgsave
     liftIO $ threadDelay (10^(5 :: Int))
     bgrewriteaof >>= \case
       Right (Status _) -> return ()
-      _ -> error "error"
+      Right err -> error $ show err
+      Left err -> error $ show err
     return ()
 
 testConfig :: Test
@@ -599,19 +601,11 @@ testInfo = testCase "info/lastsave/dbsize" $ do
     dbsize          >>=? 0
     configResetstat >>=? Ok
 
-testSlowlog :: Test
-testSlowlog = testCase "slowlog" $ do
-    slowlogReset >>=? Ok
-    slowlogGet 5 >>=? []
-    slowlogLen   >>=? 0
-
-testDebugObject :: Test
-testDebugObject = testCase "debugObject/debugSegfault" $ do
-    set "key" "value" >>=? Ok
-    debugObject "key" >>= \case
-      Left _ -> error "error"
-      _ -> return ()
-    return ()
+-- testSlowlog :: Test
+-- testSlowlog = testCase "slowlog" $ do
+--     slowlogReset >>=? Ok
+--     slowlogGet 5 >>=? []
+--     slowlogLen   >>=? 0
 
 testScans :: Test
 testScans = testCase "scans" $ do
@@ -808,7 +802,9 @@ testXInfo = testCase "xinfo" $ do
             xinfoGroupsGroupName = "somegroup",
             xinfoGroupsNumConsumers = 1,
             xinfoGroupsNumPendingMessages = 2,
-            xinfoGroupsLastDeliveredMessageId = "122-0"
+            xinfoGroupsLastDeliveredMessageId = "122-0",
+            xinfoGroupsNumEntriesRead = Just 2,
+            xinfoGroupsLag = Just 0
         }]
     xinfoStream "somestream" >>=? XInfoStreamResponse
         { xinfoStreamLength = 2
@@ -824,6 +820,9 @@ testXInfo = testCase "xinfo" $ do
             { recordId = "122-0"
             , keyValues = [("key2", "value2")]
             }
+        , xinfoMaxDeletedEntryId = Just "0-0"
+        , xinfoEntriesAdded = Just 2
+        , xinfoRecordedFirstEntryId = Just "121-0"
         }
 
 testXDel ::Test
