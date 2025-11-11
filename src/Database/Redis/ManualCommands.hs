@@ -976,6 +976,8 @@ instance RedisResult StreamsRecord where
             decodeKeyValues bs = map (\[x,y] -> (x,y)) $ chunksOfTwo bs
             chunksOfTwo (x:y:rest) = [x,y]:chunksOfTwo rest
             chunksOfTwo _ = []
+    decode (Bulk (Just recordId)) = do
+        return StreamsRecord{recordId = recordId, keyValues = []}
     decode a = Left a
 
 data XReadOpts = XReadOpts
@@ -1213,6 +1215,29 @@ defaultXClaimOpts = XClaimOpts
     , xclaimForce = False
     }
 
+data XAutoClaimOpts = XAutoClaimOpts
+    { xcount    :: Maybe Integer
+    , xjustIds  :: Bool
+    } deriving (Show, Eq)
+
+defaultXAutoClaimOpts :: XAutoClaimOpts
+defaultXAutoClaimOpts = XAutoClaimOpts
+    { xcount = Nothing
+    , xjustIds = False
+    }
+
+data XAutoClaimResponse = XAutoClaimResponse
+    { nextStartId :: ByteString
+    , claimedRecords :: [StreamsRecord]
+    , deletedRecords :: [StreamsRecord]
+    } deriving (Show, Eq, Read, Generic)
+
+instance RedisResult XAutoClaimResponse where
+    decode (MultiBulk (Just [Bulk (Just nextStartId), MultiBulk (Just rawClaimedRecords), MultiBulk (Just rawDeletedRecords)])) = do
+        claimedRecords <- mapM decode rawClaimedRecords
+        deletedRecords <- mapM decode rawDeletedRecords
+        return XAutoClaimResponse{..}
+    decode a = Left a
 
 -- |Format a request for XCLAIM.
 xclaimRequest
@@ -1243,6 +1268,21 @@ xclaim
     -> m (f [StreamsRecord])
 xclaim stream group consumer minIdleTime opts messageIds = sendRequest $
     xclaimRequest stream group consumer minIdleTime opts messageIds
+
+xAutoClaim
+    :: (RedisCtx m f)
+    => ByteString -- ^ stream
+    -> ByteString -- ^ group
+    -> ByteString -- ^ consumer
+    -> Integer -- ^ min idle time
+    -> ByteString -- ^ start ID
+    -> XAutoClaimOpts -- ^ count
+    -> m (f XAutoClaimResponse)
+xAutoClaim stream group consumer minIdleTime startId XAutoClaimOpts{..} = sendRequest $
+    ["XAUTOCLAIM", stream, group, consumer, encode minIdleTime, startId] ++ optArgs
+    where optArgs = countArg ++ justIdsArg
+          countArg = maybe [] (\x -> ["COUNT", encode x]) xcount
+          justIdsArg = if xjustIds then ["JUSTID"] else []
 
 xclaimJustIds
     :: (RedisCtx m f)
