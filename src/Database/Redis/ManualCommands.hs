@@ -976,6 +976,8 @@ instance RedisResult StreamsRecord where
             decodeKeyValues bs = map (\[x,y] -> (x,y)) $ chunksOfTwo bs
             chunksOfTwo (x:y:rest) = [x,y]:chunksOfTwo rest
             chunksOfTwo _ = []
+    decode (Bulk (Just recordId)) = do
+        return StreamsRecord{recordId = recordId, keyValues = []}
     decode a = Left a
 
 data XReadOpts = XReadOpts
@@ -1227,11 +1229,13 @@ defaultXAutoClaimOpts = XAutoClaimOpts
 data XAutoClaimResponse = XAutoClaimResponse
     { nextStartId :: ByteString
     , claimedRecords :: [StreamsRecord]
+    , deletedRecords :: [StreamsRecord]
     } deriving (Show, Eq, Read, Generic)
 
 instance RedisResult XAutoClaimResponse where
-    decode (MultiBulk (Just [Bulk (Just nextStartId), MultiBulk (Just rawRecords)])) = do
-        claimedRecords <- mapM decode rawRecords
+    decode (MultiBulk (Just [Bulk (Just nextStartId), MultiBulk (Just rawClaimedRecords), MultiBulk (Just rawDeletedRecords)])) = do
+        claimedRecords <- mapM decode rawClaimedRecords
+        deletedRecords <- mapM decode rawDeletedRecords
         return XAutoClaimResponse{..}
     decode a = Left a
 
