@@ -1,6 +1,6 @@
 {
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
+    nixpkgs.url = "github:nixos/nixpkgs/89c2b2330e733d6cdb5eae7b899326930c2c0648";
     flake-parts.url = "github:hercules-ci/flake-parts";
     haskell-flake.url = "github:srid/haskell-flake";
     system.url = "github:nix-systems/default";
@@ -25,9 +25,18 @@
           services.redis."redis".enable = true;
         };
         haskellProjects.default = {
-          basePackages = pkgs.haskell.packages.ghc947;
+          basePackages = pkgs.haskell.packages.ghc98;
           autoWire = [ "packages" ];
+          devShell.tools = hp: {
+            haskell-language-server = null;
+          };
+          
+          # Optional: Disable the HLS check if you don't want it running in 'nix flake check'
+          devShell.hlsCheck.enable = false;
         };
+        packages = {
+          regex-tdfa.source="1.3.2.5";
+          };
         packages.default = self'.packages.hedis;
         devShells.default = pkgs.mkShell {
           name = "hedis";
