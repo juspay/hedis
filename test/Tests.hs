@@ -841,6 +841,87 @@ testXTrim = testCase "xtrim" $ do
     xadd "somestream" "125" [("key5", "value5")]
     xtrim "somestream" (Maxlen 2) >>=? 3
 
+testXTrimMinid :: Test
+testXTrimMinid = testCase "xtrim minid" $ do
+    xadd "trimminid" "100" [("k", "v1")]
+    xadd "trimminid" "200" [("k", "v2")]
+    xadd "trimminid" "300" [("k", "v3")]
+    xadd "trimminid" "400" [("k", "v4")]
+    xtrim "trimminid" (Minid "300") >>=? 2
+    xlen "trimminid" >>=? 2
+
+    xadd "trimapproxminid" "100" [("k", "v1")]
+    xadd "trimapproxminid" "200" [("k", "v2")]
+    xadd "trimapproxminid" "300" [("k", "v3")]
+    xadd "trimapproxminid" "400" [("k", "v4")]
+    xtrim "trimapproxminid" (ApproxMinid "300") >>= \case
+      Left reply -> liftIO $ HUnit.assertFailure $ "Redis error: " ++ show reply
+      Right trimmed -> assert (trimmed >= 0 && trimmed <= 2)
+    xlen "trimapproxminid" >>= \case
+      Left reply -> liftIO $ HUnit.assertFailure $ "Redis error: " ++ show reply
+      Right l -> assert (l >= 2 && l <= 4)
+
+testXAddMinid :: Test
+testXAddMinid = testCase "xadd minid trim" $ do
+    xadd "addminid" "100" [("k", "v1")]
+    xadd "addminid" "200" [("k", "v2")]
+    xadd "addminid" "300" [("k", "v3")]
+    xaddOpts "addminid" "*" [("k", "v4")] (Minid "300")
+    xlen "addminid" >>=? 2
+
+    xadd "addapproxminid" "100" [("k", "v1")]
+    xadd "addapproxminid" "200" [("k", "v2")]
+    xadd "addapproxminid" "300" [("k", "v3")]
+    xaddOpts "addapproxminid" "*" [("k", "v4")] (ApproxMinid "300")
+    xlen "addapproxminid" >>= \case
+      Left reply -> liftIO $ HUnit.assertFailure $ "Redis error: " ++ show reply
+      Right l -> assert (l >= 2 && l <= 4)
+
+testXTrimWithLimit :: Test
+testXTrimWithLimit = testCase "xtrim with limit" $ do
+    xadd "trimmaxlenlimit" "100" [("k", "v1")]
+    xadd "trimmaxlenlimit" "200" [("k", "v2")]
+    xadd "trimmaxlenlimit" "300" [("k", "v3")]
+    xadd "trimmaxlenlimit" "400" [("k", "v4")]
+    xadd "trimmaxlenlimit" "500" [("k", "v5")]
+    xtrim "trimmaxlenlimit" (ApproxMaxlenWithLimit 2 1) >>= \case
+      Left reply -> liftIO $ HUnit.assertFailure $ "Redis error: " ++ show reply
+      Right trimmed -> assert (trimmed >= 0 && trimmed <= 1)
+    xlen "trimmaxlenlimit" >>= \case
+      Left reply -> liftIO $ HUnit.assertFailure $ "Redis error: " ++ show reply
+      Right l -> assert (l <= 5 && l >= 4)
+
+    xadd "trimminidlimit" "100" [("k", "v1")]
+    xadd "trimminidlimit" "200" [("k", "v2")]
+    xadd "trimminidlimit" "300" [("k", "v3")]
+    xadd "trimminidlimit" "400" [("k", "v4")]
+    xtrim "trimminidlimit" (ApproxMinidWithLimit "300" 1) >>= \case
+      Left reply -> liftIO $ HUnit.assertFailure $ "Redis error: " ++ show reply
+      Right trimmed2 -> assert (trimmed2 >= 0 && trimmed2 <= 1)
+    xlen "trimminidlimit" >>= \case
+      Left reply -> liftIO $ HUnit.assertFailure $ "Redis error: " ++ show reply
+      Right l2 -> assert (l2 <= 4 && l2 >= 3)
+
+testXAddWithLimit :: Test
+testXAddWithLimit = testCase "xadd with limit trim" $ do
+    xadd "addmaxlenlimit" "100" [("k", "v1")]
+    xadd "addmaxlenlimit" "200" [("k", "v2")]
+    xadd "addmaxlenlimit" "300" [("k", "v3")]
+    xadd "addmaxlenlimit" "400" [("k", "v4")]
+    xaddOpts "addmaxlenlimit" "*" [("k", "v5")] (ApproxMaxlenWithLimit 2 1)
+    xlen "addmaxlenlimit" >>= \case
+      Left reply -> liftIO $ HUnit.assertFailure $ "Redis error: " ++ show reply
+      Right l -> assert (l <= 5 && l >= 4)
+
+    xadd "addminidlimit" "100" [("k", "v1")]
+    xadd "addminidlimit" "200" [("k", "v2")]
+    xadd "addminidlimit" "300" [("k", "v3")]
+    xadd "addminidlimit" "400" [("k", "v4")]
+    xaddOpts "addminidlimit" "*" [("k", "v5")] (ApproxMinidWithLimit "300" 1)
+    xlen "addminidlimit" >>= \case
+      Left reply -> liftIO $ HUnit.assertFailure $ "Redis error: " ++ show reply
+      Right l2 -> assert (l2 <= 5 && l2 >= 4)
+
 testFunctionLoad :: Test
 testFunctionLoad = testCase "functionLoad" $ do
     let fCallLib = $(embedFile "test/fcall_test.lua")
