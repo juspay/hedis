@@ -935,7 +935,7 @@ zrangebylexLimit key min max offset count  =
     sendRequest ["ZRANGEBYLEX", encode key, encode min, encode max,
                  "LIMIT", encode offset, encode count]
 
-data TrimOpts = NoArgs | Maxlen Integer | ApproxMaxlen Integer
+data TrimOpts = NoArgs | Maxlen Integer | ApproxMaxlen Integer | ApproxMaxlenWithLimit Integer Integer | Minid ByteString | ApproxMinid ByteString | ApproxMinidWithLimit ByteString Integer
 
 xaddOpts
     :: (RedisCtx m f)
@@ -952,6 +952,10 @@ xaddOpts key entryId fieldValues opts = sendRequest $
             NoArgs -> []
             Maxlen max -> ["MAXLEN", encode max]
             ApproxMaxlen max -> ["MAXLEN", "~", encode max]
+            ApproxMaxlenWithLimit max lim -> ["MAXLEN", "~", encode max, "LIMIT", encode lim]
+            Minid mid -> ["MINID", mid]
+            ApproxMinid mid -> ["MINID", "~", mid]
+            ApproxMinidWithLimit mid lim -> ["MINID", "~", mid, "LIMIT", encode lim]
 
 xadd
     :: (RedisCtx m f)
@@ -1484,6 +1488,10 @@ xtrim stream opts = sendRequest $ ["XTRIM", stream] ++ optArgs
             NoArgs -> []
             Maxlen max -> ["MAXLEN", encode max]
             ApproxMaxlen max -> ["MAXLEN", "~", encode max]
+            ApproxMaxlenWithLimit max lim -> ["MAXLEN", "~", encode max, "LIMIT", encode lim]
+            Minid mid -> ["MINID", mid]
+            ApproxMinid mid -> ["MINID", "~", mid]
+            ApproxMinidWithLimit mid lim -> ["MINID", "~", mid, "LIMIT", encode lim]
 
 inf :: RealFloat a => a
 inf = 1 / 0
