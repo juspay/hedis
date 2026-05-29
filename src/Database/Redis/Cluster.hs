@@ -118,8 +118,13 @@ type SlaveNode = Node
 -- until it changes).
 data Shard = Shard MasterNode [SlaveNode] deriving (Show, Eq, Ord)
 
--- A map from hashslot to shards
-newtype ShardMap = ShardMap (IntMap.IntMap Shard) deriving (Show)
+-- A map from hashslot to shards, tagged with the cluster's current epoch
+-- so that stale CLUSTER SLOTS responses (from gossip-lagged nodes) are never
+-- allowed to overwrite a newer ShardMap that another thread already wrote.
+data ShardMap = ShardMap
+    { shardMapSlots :: IntMap.IntMap Shard
+    , shardMapEpoch :: !Int   -- cluster_current_epoch at the time of the last CLUSTER SLOTS fetch
+    } deriving (Show)
 
 type NodeConnectionMap = HM.HashMap NodeID NodeConnection
 
@@ -149,9 +154,7 @@ createClusterConnectionPools withAuth maxResources idleTime commandInfos shardMa
         nodeConns <- nodeConnections
         shardNodeVar <- newMVar (shardMap, nodeConns)
         nodeRequestTimeout <- round . (\x -> (x :: Time.NominalDiffTime) * 1000000) . realToFrac . fromMaybe (5 :: Double) . (requestTimeoutSeconds <|> ). (>>= readMaybe) <$> lookupEnv "REDIS_REQUEST_NODE_TIMEOUT"
-        let clusterConfig = ClusterConfig {
-                    requestTimeout = nodeRequestTimeout
-                }
+        let clusterConfig = ClusterConfig { requestTimeout = nodeRequestTimeout }
         return $ Connection shardNodeVar (CMD.newInfoMap commandInfos) clusterConfig where
     nodeConnections :: IO (HM.HashMap NodeID NodeConnection)
     nodeConnections = do
@@ -160,7 +163,7 @@ createClusterConnectionPools withAuth maxResources idleTime commandInfos shardMa
 
 createNodePool :: (Host -> CC.PortID -> IO CC.ConnectionContext) -> Int -> Time.NominalDiffTime -> Node -> IO (NodeID, NodeConnection)
 createNodePool withAuth maxResources idleTime (Node nodeid _ host port) = do
-    connectionPool <- createPool (do 
+    connectionPool <- createPool (do
                                     connectionContext <- withAuth host (CC.PortNumber $ toEnum port)
                                     ref <- IOR.newIORef Nothing
                                     return (connectionContext,ref)) (CC.disconnect . fst) 1 idleTime maxResources
@@ -271,13 +274,13 @@ evaluatePipeline refreshShardmapAction conn@(Connection shardNodeVar infoMap (Cl
                                 Right v -> return v
                                 Left (err :: SomeException) ->
                                     case fromException err of
-                                        Just (er :: TimeoutException) -> hasLocked $ refreshShardmapAction Nothing >> throwIO er
+                                        Just (er :: TimeoutException) -> hasLocked (refreshShardmapAction Nothing) >> throwIO er
                                         _ -> getRandomConnection nc conn >>= (`executeRequests` r)
                 refreshedShardMapAndNodeConnsIORef <- IOR.newIORef Nothing
-                mapM (\completedRequest@(CompletedRequest index request response) -> 
+                mapM (\completedRequest@(CompletedRequest index request response) ->
                     case response of
                         (Error errString) | (B.isPrefixOf "MOVED" errString || B.isPrefixOf "TRYAGAIN" errString) -> CompletedRequest index request <$> refreshShardMapAndRetryRequest refreshedShardMapAndNodeConnsIORef (hasLocked $ refreshShardmapAction (Just nc)) request
-                        (askingRedirection -> Just (host, port)) -> do 
+                        (askingRedirection -> Just (host, port)) -> do
                                 refreshedShardMapAndNodeConns <- fromMaybeM (hasLocked $ refreshShardmapAction (Just nc)) $ IOR.readIORef refreshedShardMapAndNodeConnsIORef
                                 maybeAskNode <- nodeConnWithHostAndPort refreshedShardMapAndNodeConns host port
                                 case maybeAskNode of
@@ -302,8 +305,8 @@ evaluatePipeline refreshShardmapAction conn@(Connection shardNodeVar infoMap (Cl
         replies <- requestNode reqTimeout nodeConn $ map rawRequest nodeRequests
         return $ zipWith (curry (\(PendingRequest i r, rep) -> CompletedRequest i r rep)) nodeRequests replies
     refreshShardMapAndRetryRequest :: IOR.IORef (Maybe (ShardMap, NodeConnectionMap)) -> IO (ShardMap, NodeConnectionMap) -> [B.ByteString] -> IO Reply
-    refreshShardMapAndRetryRequest refreshedShardMapAndNodeConnsIORef refreshShardmap request =  do 
-        (newShardMap, newNodeConn) <- fromMaybeM (hasLocked refreshShardmap >>= (\new -> IOR.writeIORef refreshedShardMapAndNodeConnsIORef (Just new) >> return new )) $ 
+    refreshShardMapAndRetryRequest refreshedShardMapAndNodeConnsIORef refreshShardmap request =  do
+        (newShardMap, newNodeConn) <- fromMaybeM (hasLocked refreshShardmap >>= (\new -> IOR.writeIORef refreshedShardMapAndNodeConnsIORef (Just new) >> return new)) $
                                         IOR.readIORef refreshedShardMapAndNodeConnsIORef
         nodeConns <- nodeConnectionForCommand newShardMap newNodeConn infoMap request
         head <$> requestNode reqTimeout (head nodeConns) [request]
@@ -325,8 +328,8 @@ evaluateTransactionPipeline refreshShardmapAction conn requests' = do
     -- the commands in a transaction are applied and some are not. Better to
     -- fail early.
     hashSlot <- hashSlotForKeys (CrossSlotException requests) keys
-    (ShardMap shardMap, nodeConns) <- hasLocked $ readMVar shardNodeVar
-    nodeConn <- nodeConnForHashSlot (ShardMap shardMap, nodeConns) ("evaluateTransactionPipeline" : head requests) hashSlot
+    (sm, nodeConns) <- hasLocked $ readMVar shardNodeVar
+    nodeConn <- nodeConnForHashSlot (sm, nodeConns) ("evaluateTransactionPipeline" : head requests) hashSlot
     -- catch the exception thrown, send the command to random node.
     -- This change is required to handle the cluster topology change.
     eresps <- try $ requestNode reqTimeout nodeConn requests
@@ -386,9 +389,9 @@ evaluateTransactionPipeline refreshShardmapAction conn requests' = do
         []          -> return $ Right resps) resps
 
 nodeConnForHashSlot :: (ShardMap, NodeConnectionMap) -> [B.ByteString] -> HashSlot -> IO NodeConnection
-nodeConnForHashSlot (ShardMap shardMap, nodeConnsMap) errInfo hashSlot = do
+nodeConnForHashSlot (sm, nodeConnsMap) errInfo hashSlot = do
     node <-
-        case IntMap.lookup (fromEnum hashSlot) shardMap of
+        case IntMap.lookup (fromEnum hashSlot) (shardMapSlots sm) of
             Nothing -> throwIO $ MissingNodeException ("HashSlot lookup failed in nodeConnForHashSlot" : errInfo)
             Just (Shard master _) -> return master
     case HM.lookup (nodeId node) nodeConnsMap of
@@ -434,7 +437,7 @@ nodeConnWithHostAndPort (shardMap, nodeConns) host port = do
         Just node -> return (HM.lookup (nodeId node) nodeConns)
 
 nodeConnectionForCommand :: ShardMap -> NodeConnectionMap -> CMD.InfoMap -> [B.ByteString] -> IO [NodeConnection]
-nodeConnectionForCommand (ShardMap shardMap) nodeConns infoMap request =
+nodeConnectionForCommand sm nodeConns infoMap request =
     case request of
         ("FLUSHALL" : _) -> allNodes
         ("FLUSHDB" : _) -> allNodes
@@ -443,29 +446,29 @@ nodeConnectionForCommand (ShardMap shardMap) nodeConns infoMap request =
         _ -> do
             keys <- requestKeys infoMap request
             hashSlot <- hashSlotForKeys (CrossSlotException [request]) keys
-            node <- case IntMap.lookup (fromEnum hashSlot) shardMap of
+            node <- case IntMap.lookup (fromEnum hashSlot) (shardMapSlots sm) of
                 Nothing -> throwIO $ MissingNodeException ("HashSlot lookup failed in nodeConnectionForCommand" : request)
                 Just (Shard master _) -> return master
             maybe (throwIO $ MissingNodeException ("NodeId lookup failed in nodeConnectionForCommand" : request)) (return . return) (HM.lookup (nodeId node) nodeConns)
     where
         allNodes = do
-            maybeNodes <- allMasterNodes (ShardMap shardMap) nodeConns
+            maybeNodes <- allMasterNodes sm nodeConns
             case maybeNodes of
                 Nothing -> throwIO $ MissingNodeException ("Master node lookup failed" : request)
                 Just allNodes' -> return allNodes'
 
 allMasterNodes :: ShardMap -> NodeConnectionMap -> IO (Maybe [NodeConnection])
-allMasterNodes (ShardMap shardMap) nodeConns = do
+allMasterNodes sm nodeConns = do
     return $ mapM (flip HM.lookup nodeConns) onlyMasterNodeIds
   where
-    onlyMasterNodeIds = nubOrd $ (\(Shard master _) -> nodeId master) <$> (IntMap.elems shardMap)
+    onlyMasterNodeIds = nubOrd $ (\(Shard master _) -> nodeId master) <$> (IntMap.elems (shardMapSlots sm))
 
 requestNode :: Int -> NodeConnection -> [[B.ByteString]] -> IO [Reply]
 requestNode requestNodeTimeout (NodeConnection pool _) requests = withResource pool $ \(ctx, lastRecvRef) -> do
     mayberesp <- timeout requestNodeTimeout $ requestNodeImpl ctx lastRecvRef
     case mayberesp of
-      Just a    -> return a
-      Nothing   -> putStrLn "timeout happened" *> throwIO (TimeoutException "Request Timeout")
+      Just a  -> return a
+      Nothing -> throwIO (TimeoutException "Request Timeout")
     where
     requestNodeImpl :: CC.ConnectionContext -> IOR.IORef (Maybe B.ByteString) -> IO [Reply]
     requestNodeImpl ctx lastRecvRef = do
@@ -490,7 +493,7 @@ requestNode requestNodeTimeout (NodeConnection pool _) requests = withResource p
 
 {-# INLINE nodes #-}
 nodes :: ShardMap -> [Node]
-nodes (ShardMap shardMap) = concatMap snd $ IntMap.toList $ fmap shardNodes shardMap where
+nodes sm = concatMap snd $ IntMap.toList $ fmap shardNodes (shardMapSlots sm) where
     shardNodes :: Shard -> [Node]
     shardNodes (Shard master slaves) = master:slaves
 
@@ -515,8 +518,8 @@ requestMasterNodes conn@(Connection _ _ (ClusterConfig reqTimeout)) req = do
 
 masterNodes :: Connection -> IO [NodeConnection]
 masterNodes (Connection shardNodeVar _ _) = do
-    (ShardMap shardMap, nodeConns) <- hasLocked $ readMVar shardNodeVar
-    let masterNodeIds = map (\(Shard m _) -> nodeId m) $ IntMap.elems shardMap
+    (sm, nodeConns) <- hasLocked $ readMVar shardNodeVar
+    let masterNodeIds = map (\(Shard m _) -> nodeId m) $ IntMap.elems (shardMapSlots sm)
     return $ mapMaybe (`HM.lookup` nodeConns) (nubOrd masterNodeIds)
 
 getRandomConnection :: NodeConnection -> Connection -> IO NodeConnection
