@@ -1237,6 +1237,11 @@ instance RedisResult XAutoClaimResponse where
         claimedRecords <- mapM decode rawClaimedRecords
         deletedRecords <- mapM decode rawDeletedRecords
         return XAutoClaimResponse{..}
+    -- Support Redis 6.2 format (2 elements, no deletedRecords field)
+    decode (MultiBulk (Just [Bulk (Just nextStartId), MultiBulk (Just rawClaimedRecords)])) = do
+        claimedRecords <- mapM decode rawClaimedRecords
+        let deletedRecords = []
+        return XAutoClaimResponse{..}
     decode a = Left a
 
 -- |Format a request for XCLAIM.
