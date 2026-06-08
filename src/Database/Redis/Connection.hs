@@ -10,7 +10,7 @@ import qualified Control.Monad.Catch as Catch
 import Control.Monad.IO.Class(liftIO, MonadIO)
 import Control.Monad(when,foldM)
 
-import Control.Concurrent.MVar(modifyMVar)
+import Control.Concurrent.MVar(withMVar)
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as Char8
 import Data.Functor(void)
@@ -34,7 +34,7 @@ import Database.Redis.Cluster(ShardMap(..), Node(..), Shard(..), NodeConnectionM
 import qualified Database.Redis.Cluster as Cluster
 import qualified Database.Redis.ConnectionContext as CC
 import qualified System.Timeout as T
-import Data.IORef(IORef, readIORef)
+import Data.IORef(IORef, readIORef, atomicWriteIORef)
 import Database.Redis.Commands
     ( ping
     , select
@@ -309,23 +309,19 @@ parseClusterEpoch (Bulk (Just bs)) =
 parseClusterEpoch _ = 0
 
 refreshShardMap :: ConnectInfo -> Cluster.Connection -> Maybe Cluster.NodeConnection -> IO (ShardMap, NodeConnectionMap)
-refreshShardMap connectInfo@ConnInfo{connectMaxConnections,connectMaxIdleTime} (Cluster.Connection shardNodeVar _ _) nodeConn = do
-    modifyMVar shardNodeVar $ \(currentShardMap, oldNodeConnMap) -> do
+refreshShardMap connectInfo@ConnInfo{connectMaxConnections,connectMaxIdleTime} (Cluster.Connection shardNodeVar refreshLock _ _) nodeConn =
+    withMVar refreshLock $ \_ -> do
+        (currentShardMap, oldNodeConnMap) <- readIORef shardNodeVar
         newShardMap <- refreshShardMapWithNodeConn nodeConn (HM.elems oldNodeConnMap)
-        -- Epoch guard: Redis cluster gossip is eventually consistent.
-        -- A CLUSTER SLOTS response from a gossip-lagged node carries a lower
-        -- cluster_current_epoch. Writing it back would overwrite a correct
-        -- post-failover ShardMap with a stale one.
-        -- We skip the guard when either epoch is 0 (parse failed / old node)
-        -- so that a missing CLUSTER INFO never permanently blocks refreshes.
-        let isStale = shardMapEpoch currentShardMap > 0
-                   && shardMapEpoch newShardMap    > 0
-                   && shardMapEpoch newShardMap    < shardMapEpoch currentShardMap
-        if isStale
-            then return ((currentShardMap, oldNodeConnMap), (currentShardMap, oldNodeConnMap))
+        let keepCurrent = shardMapEpoch currentShardMap > 0
+                       && shardMapEpoch newShardMap     > 0
+                       && shardMapEpoch newShardMap    <= shardMapEpoch currentShardMap
+        if keepCurrent
+            then return (currentShardMap, oldNodeConnMap)
             else do
                 newNodeConnMap <- updateNodeConnections newShardMap oldNodeConnMap
-                return ((newShardMap, newNodeConnMap), (newShardMap, newNodeConnMap))
+                atomicWriteIORef shardNodeVar (newShardMap, newNodeConnMap)
+                return (newShardMap, newNodeConnMap)
     where
         withAuth :: Cluster.Host -> CC.PortID -> IO CC.ConnectionContext
         withAuth = connectWithAuth connectInfo

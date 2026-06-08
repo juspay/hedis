@@ -36,7 +36,7 @@ import Data.Map(fromListWith, assocs)
 import Data.Function(on)
 import Control.Exception(Exception, SomeException, throwIO, BlockedIndefinitelyOnMVar(..), catches, Handler(..), try, fromException)
 import Data.Pool(Pool, createPool, withResource, destroyAllResources)
-import Control.Concurrent.MVar(MVar, newMVar, readMVar, modifyMVar)
+import Control.Concurrent.MVar(MVar, newMVar, modifyMVar, withMVar)
 import Control.Monad(zipWithM, replicateM)
 import Database.Redis.Cluster.HashSlot(HashSlot(..), keyToSlot, numHashSlots)
 import qualified Database.Redis.ConnectionContext as CC
@@ -67,7 +67,7 @@ import Control.Applicative((<|>))
 -- | A connection to a redis cluster, it is composed of a map from Node IDs to
 -- | 'NodeConnection's, a 'Pipeline', and a 'ShardMap'
 
-data Connection = Connection (MVar (ShardMap, NodeConnectionMap)) CMD.InfoMap ClusterConfig
+data Connection = Connection (IOR.IORef (ShardMap, NodeConnectionMap)) (MVar ()) CMD.InfoMap ClusterConfig
 
 -- | A connection to a single node in the cluster, similar to 'ProtocolPipelining.Connection'
 data NodeConnection = NodeConnection (Pool (CC.ConnectionContext, IOR.IORef (Maybe B.ByteString))) NodeID
@@ -152,10 +152,11 @@ instance Exception TimeoutException
 createClusterConnectionPools :: (Host -> CC.PortID -> IO CC.ConnectionContext) -> Int -> Time.NominalDiffTime -> [CMD.CommandInfo] -> ShardMap -> Maybe Double -> IO Connection
 createClusterConnectionPools withAuth maxResources idleTime commandInfos shardMap requestTimeoutSeconds = do
         nodeConns <- nodeConnections
-        shardNodeVar <- newMVar (shardMap, nodeConns)
+        shardNodeVar <- IOR.newIORef (shardMap, nodeConns)
+        refreshLock <- newMVar ()
         nodeRequestTimeout <- round . (\x -> (x :: Time.NominalDiffTime) * 1000000) . realToFrac . fromMaybe (5 :: Double) . (requestTimeoutSeconds <|> ). (>>= readMaybe) <$> lookupEnv "REDIS_REQUEST_NODE_TIMEOUT"
         let clusterConfig = ClusterConfig { requestTimeout = nodeRequestTimeout }
-        return $ Connection shardNodeVar (CMD.newInfoMap commandInfos) clusterConfig where
+        return $ Connection shardNodeVar refreshLock (CMD.newInfoMap commandInfos) clusterConfig where
     nodeConnections :: IO (HM.HashMap NodeID NodeConnection)
     nodeConnections = do
       nodeConnectionsList <- mapM (createNodePool withAuth maxResources idleTime) (nubOrd $ nodes shardMap)
@@ -170,9 +171,10 @@ createNodePool withAuth maxResources idleTime (Node nodeid _ host port) = do
     return (nodeid, NodeConnection connectionPool nodeid)
 
 destroyNodeResources :: Connection -> IO ()
-destroyNodeResources (Connection shardNodeVar _ _) =
-    hasLocked $ readMVar shardNodeVar
-    >>= (\(_, nodeConnMap) -> (mapM_ disconnectNode $ HM.elems nodeConnMap))
+destroyNodeResources (Connection shardNodeVar refreshLock _ _) =
+    withMVar refreshLock $ \_ ->
+        IOR.readIORef shardNodeVar
+        >>= (\(_, nodeConnMap) -> (mapM_ disconnectNode $ HM.elems nodeConnMap))
     where
         disconnectNode (NodeConnection nodePool _) = destroyAllResources nodePool
 
@@ -249,8 +251,8 @@ rawResponse (CompletedRequest _ _ r) = r
 -- acceptable in most cases as these errors should only occur in the case of
 -- cluster reconfiguration events, which should be rare.
 evaluatePipeline :: (Maybe NodeConnection -> IO (ShardMap, NodeConnectionMap)) -> Connection -> [[B.ByteString]] -> IO [Reply]
-evaluatePipeline refreshShardmapAction conn@(Connection shardNodeVar infoMap (ClusterConfig reqTimeout)) requests = do
-        (shardMap, nodesConn) <- hasLocked $ readMVar shardNodeVar
+evaluatePipeline refreshShardmapAction conn@(Connection shardNodeVar _ infoMap (ClusterConfig reqTimeout)) requests = do
+        (shardMap, nodesConn) <- IOR.readIORef shardNodeVar
         erequestsByNode <- try $ getRequestsByNode shardMap nodesConn
         requestsByNode <- case erequestsByNode of
             Right reqByNode -> pure reqByNode
@@ -306,7 +308,7 @@ evaluatePipeline refreshShardmapAction conn@(Connection shardNodeVar infoMap (Cl
         return $ zipWith (curry (\(PendingRequest i r, rep) -> CompletedRequest i r rep)) nodeRequests replies
     refreshShardMapAndRetryRequest :: IOR.IORef (Maybe (ShardMap, NodeConnectionMap)) -> IO (ShardMap, NodeConnectionMap) -> [B.ByteString] -> IO Reply
     refreshShardMapAndRetryRequest refreshedShardMapAndNodeConnsIORef refreshShardmap request =  do
-        (newShardMap, newNodeConn) <- fromMaybeM (hasLocked refreshShardmap >>= (\new -> IOR.writeIORef refreshedShardMapAndNodeConnsIORef (Just new) >> return new)) $
+        (newShardMap, newNodeConn) <- fromMaybeM (hasLocked refreshShardmap >>= (\new -> IOR.atomicWriteIORef refreshedShardMapAndNodeConnsIORef (Just new) >> return new)) $
                                         IOR.readIORef refreshedShardMapAndNodeConnsIORef
         nodeConns <- nodeConnectionForCommand newShardMap newNodeConn infoMap request
         head <$> requestNode reqTimeout (head nodeConns) [request]
@@ -317,7 +319,7 @@ evaluatePipeline refreshShardmapAction conn@(Connection shardNodeVar infoMap (Cl
 evaluateTransactionPipeline :: (Maybe NodeConnection -> IO (ShardMap, NodeConnectionMap)) -> Connection -> [[B.ByteString]] -> IO [Reply]
 evaluateTransactionPipeline refreshShardmapAction conn requests' = do
     let requests = reverse requests'
-    let (Connection shardNodeVar infoMap (ClusterConfig reqTimeout)) = conn
+    let (Connection shardNodeVar _ infoMap (ClusterConfig reqTimeout)) = conn
     keys <- mconcat <$> mapM (requestKeys infoMap) requests
     -- In cluster mode Redis expects commands in transactions to all work on the
     -- same hashslot. We find that hashslot here.
@@ -328,7 +330,7 @@ evaluateTransactionPipeline refreshShardmapAction conn requests' = do
     -- the commands in a transaction are applied and some are not. Better to
     -- fail early.
     hashSlot <- hashSlotForKeys (CrossSlotException requests) keys
-    (sm, nodeConns) <- hasLocked $ readMVar shardNodeVar
+    (sm, nodeConns) <- IOR.readIORef shardNodeVar
     nodeConn <- nodeConnForHashSlot (sm, nodeConns) ("evaluateTransactionPipeline" : head requests) hashSlot
     -- catch the exception thrown, send the command to random node.
     -- This change is required to handle the cluster topology change.
@@ -488,7 +490,7 @@ requestNode requestNodeTimeout (NodeConnection pool _) requests = withResource p
             Scanner.Fail{}       -> CC.errConnClosed
             Scanner.More{}    -> error "Hedis: parseWith returned Partial"
             Scanner.Done rest' r -> do
-                IOR.writeIORef lastRecvRef (Just rest')
+                IOR.atomicWriteIORef lastRecvRef (Just rest')
                 return r
 
 {-# INLINE nodes #-}
@@ -512,19 +514,19 @@ hasLocked action =
 
 
 requestMasterNodes :: Connection -> [B.ByteString] -> IO [Reply]
-requestMasterNodes conn@(Connection _ _ (ClusterConfig reqTimeout)) req = do
+requestMasterNodes conn@(Connection _ _ _ (ClusterConfig reqTimeout)) req = do
     masterNodeConns <- masterNodes conn
     concat <$> mapM (flip (requestNode reqTimeout) [req]) masterNodeConns
 
 masterNodes :: Connection -> IO [NodeConnection]
-masterNodes (Connection shardNodeVar _ _) = do
-    (sm, nodeConns) <- hasLocked $ readMVar shardNodeVar
+masterNodes (Connection shardNodeVar _ _ _) = do
+    (sm, nodeConns) <- IOR.readIORef shardNodeVar
     let masterNodeIds = map (\(Shard m _) -> nodeId m) $ IntMap.elems (shardMapSlots sm)
     return $ mapMaybe (`HM.lookup` nodeConns) (nubOrd masterNodeIds)
 
 getRandomConnection :: NodeConnection -> Connection -> IO NodeConnection
 getRandomConnection nc conn = do
-  let (Connection shardNodeVar _ _) = conn
-  (_, nodeConns) <- hasLocked $ readMVar shardNodeVar
+  let (Connection shardNodeVar _ _ _) = conn
+  (_, nodeConns) <- IOR.readIORef shardNodeVar
   let conns = HM.elems nodeConns
   return $ fromMaybe (head conns) $ find (nc /= ) conns
