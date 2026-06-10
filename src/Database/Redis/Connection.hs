@@ -10,7 +10,7 @@ import qualified Control.Monad.Catch as Catch
 import Control.Monad.IO.Class(liftIO, MonadIO)
 import Control.Monad(when,foldM)
 
-import Control.Concurrent.MVar(modifyMVar)
+import Control.Concurrent.MVar(modifyMVar, readMVar)
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as Char8
 import Data.Functor(void)
@@ -310,8 +310,17 @@ parseClusterEpoch _ = 0
 
 refreshShardMap :: ConnectInfo -> Cluster.Connection -> Maybe Cluster.NodeConnection -> IO (ShardMap, NodeConnectionMap)
 refreshShardMap connectInfo@ConnInfo{connectMaxConnections,connectMaxIdleTime} (Cluster.Connection shardNodeVar _ _) nodeConn = do
+    -- Do the blocking CLUSTER INFO + CLUSTER SLOTS round-trips OUTSIDE the MVar.
+    -- We only take a snapshot of the existing node connections (readMVar does not
+    -- hold the lock) to reach a node, so routing threads that merely readMVar the
+    -- shardNodeVar are not blocked for the duration of the network fetch.
+    (_, nodeConnSnapshot) <- readMVar shardNodeVar
+    newShardMap <- refreshShardMapWithNodeConn nodeConn (HM.elems nodeConnSnapshot)
+    -- The critical section below is now non-blocking: compare epochs against the
+    -- freshest current ShardMap and swap. updateNodeConnections only allocates
+    -- resource-pool structures (createPool opens sockets lazily, on demand), so it
+    -- holds the lock for negligible time.
     modifyMVar shardNodeVar $ \(currentShardMap, oldNodeConnMap) -> do
-        newShardMap <- refreshShardMapWithNodeConn nodeConn (HM.elems oldNodeConnMap)
         -- Epoch guard: Redis cluster gossip is eventually consistent.
         -- A CLUSTER SLOTS response from a gossip-lagged node carries a lower
         -- cluster_current_epoch. Writing it back would overwrite a correct
