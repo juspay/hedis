@@ -25,7 +25,7 @@
           services.redis."redis".enable = true;
         };
         haskellProjects.default = {
-          basePackages = pkgs.haskell.packages.ghc947;
+          basePackages = pkgs.haskell.packages.ghc96;
           autoWire = [ "packages" ];
         };
         packages.default = self'.packages.hedis;
